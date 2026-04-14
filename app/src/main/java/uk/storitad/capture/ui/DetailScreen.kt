@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import uk.storitad.capture.capture.AudioPlayer
 import uk.storitad.capture.metadata.EntryMetadata
+import uk.storitad.capture.metadata.MediaType
 import uk.storitad.capture.metadata.MetadataRepository
 import uk.storitad.capture.storage.FileManager
 
@@ -63,19 +64,26 @@ fun DetailScreen(basename: String, onBack: () -> Unit, onEdit: (String) -> Unit)
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Button(onClick = {
-                if (playing) { player.stop(); playing = false }
-                else {
-                    player.play(repo.mediaFile(e)) { playing = false }
-                    playing = true
-                }
-            }) {
-                Icon(
-                    if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                    contentDescription = null
+            if (e.mediaType == MediaType.VIDEO) {
+                VideoPlayer(
+                    file = repo.mediaFile(e),
+                    modifier = Modifier.fillMaxWidth().height(280.dp)
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(if (playing) "Stop" else "Play")
+            } else {
+                Button(onClick = {
+                    if (playing) { player.stop(); playing = false }
+                    else {
+                        player.play(repo.mediaFile(e)) { playing = false }
+                        playing = true
+                    }
+                }) {
+                    Icon(
+                        if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                        contentDescription = null
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (playing) "Stop" else "Play")
+                }
             }
             HorizontalDivider()
             LabelValue("Recipients", e.recipients.joinToString(", "))

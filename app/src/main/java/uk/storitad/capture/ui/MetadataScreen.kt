@@ -193,14 +193,15 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
                     val base = existing ?: run {
                         val d = draft ?: return@Button
                         if (subject.isBlank()) return@Button
+                        val isVideo = d.mediaFile.extension.equals("mp4", ignoreCase = true)
                         EntryMetadata(
                             id = UUID.randomUUID().toString(),
                             capturedAt = d.capturedAt,
                             durationSeconds = d.durationMs / 1000,
                             timezone = d.timezone.id,
                             mediaFile = d.mediaFile.name,
-                            mediaType = MediaType.VOICE,
-                            mimeType = "audio/mp4",
+                            mediaType = if (isVideo) MediaType.VIDEO else MediaType.VOICE,
+                            mimeType = if (isVideo) "video/mp4" else "audio/mp4",
                             subject = subject.trim(),
                             device = Build.MODEL,
                             appVersion = BuildConfig.VERSION_NAME

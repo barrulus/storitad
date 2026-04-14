@@ -62,6 +62,9 @@ dependencies {
     implementation(libs.camerax.video)
     implementation(libs.camerax.view)
 
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
+
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)

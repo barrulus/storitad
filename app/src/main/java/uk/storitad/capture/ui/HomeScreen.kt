@@ -23,6 +23,7 @@ import uk.storitad.capture.storage.FileManager
 @Composable
 fun HomeScreen(
     onRecordVoice: () -> Unit,
+    onRecordVideo: () -> Unit,
     onPending: () -> Unit,
     onHistory: () -> Unit
 ) {
@@ -55,13 +56,11 @@ fun HomeScreen(
             )
             ActionCard(
                 title = "Record Video",
-                subtitle = "Coming in Phase 2",
+                subtitle = "Tap to start",
                 icon = Icons.Filled.Videocam,
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                outlined = true,
-                enabled = false,
-                onClick = {}
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                onClick = onRecordVideo
             )
             ActionCard(
                 title = "On device",

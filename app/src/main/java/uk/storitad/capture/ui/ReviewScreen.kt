@@ -16,6 +16,7 @@ import uk.storitad.capture.ui.drafts.DraftHolder
 @Composable
 fun ReviewScreen(basename: String, onContinue: () -> Unit, onRerecord: () -> Unit) {
     val draft = DraftHolder.get()
+    val isVideo = draft?.mediaFile?.extension?.equals("mp4", ignoreCase = true) == true
     val player = remember { AudioPlayer() }
     var playing by remember { mutableStateOf(false) }
 
@@ -29,18 +30,27 @@ fun ReviewScreen(basename: String, onContinue: () -> Unit, onRerecord: () -> Uni
         ) {
             Text(basename, style = MaterialTheme.typography.titleMedium)
             Text("${(draft?.durationMs ?: 0) / 1000}s")
-            Button(onClick = {
-                val f = draft?.mediaFile ?: return@Button
-                if (playing) { player.stop(); playing = false }
-                else { player.play(f) { playing = false }; playing = true }
-            }) {
-                Icon(
-                    if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                    contentDescription = null
+
+            if (isVideo && draft != null) {
+                VideoPlayer(
+                    file = draft.mediaFile,
+                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false).height(320.dp)
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(if (playing) "Stop" else "Play")
+            } else {
+                Button(onClick = {
+                    val f = draft?.mediaFile ?: return@Button
+                    if (playing) { player.stop(); playing = false }
+                    else { player.play(f) { playing = false }; playing = true }
+                }) {
+                    Icon(
+                        if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                        contentDescription = null
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (playing) "Stop" else "Play")
+                }
             }
+
             Spacer(Modifier.weight(1f))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(

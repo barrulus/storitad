@@ -3,6 +3,7 @@ package uk.storitad.capture.ui
 sealed class Route(val path: String) {
     data object Home : Route("home")
     data object Recording : Route("recording")
+    data object VideoRecording : Route("video-recording")
     data object Review : Route("review/{basename}") {
         fun of(basename: String) = "review/$basename"
     }
