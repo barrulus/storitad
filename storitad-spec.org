@@ -2644,3 +2644,418 @@ Appendix A changelog row:
 | Version | Date       | Changes                                        |
 |---------+------------+------------------------------------------------|
 |       2 | 2026-04-14 | Add =location= (GeoFix) and =locationName=     |
+
+* Phase 2 Implementation Plan
+
+#+begin_quote
+For agentic workers: use the same checkbox-per-step pattern as Phase 1.
+Phase 1 tag: =v0.1.0-mvp=. Target for Phase 2: =v0.2.0=.
+#+end_quote
+
+** Goal
+
+Add video capture, recording-in-progress notification, pause/resume for
+voice, a waveform visualiser, and configurable recipients. Everything stays
+offline and keeps the sidecar contract intact.
+
+** Architecture notes
+
+- Video is recorded with CameraX =Recorder= (already declared in
+  =libs.versions.toml=; Task 1 below wires it up).
+- A =ForegroundService= (=RecordingService=) owns the =MediaRecorder= /
+  CameraX session for the duration of a capture so the notification can keep
+  the mic/camera alive while the app is backgrounded. The current
+  =AudioRecorder= / =DraftHolder= get thin wrappers that bind to the service
+  rather than holding resources themselves.
+- Waveform samples come from =MediaRecorder.getMaxAmplitude()= polled every
+  50 ms and pushed into a ring buffer that the Compose screen reads as
+  =StateFlow<FloatArray>=.
+- Recipient config persists to =context.filesDir/recipients.json= (writable
+  copy seeded from =assets/recipients.json= on first run).
+- Sidecar bump: =mediaType: VIDEO= becomes valid; no schema changes
+  otherwise. =version= stays at =2=.
+
+** Task 1: CameraX dependencies + permission gate
+
+*** Files
+- Modify: =app/build.gradle.kts= — add CameraX implementations
+- Modify: =app/src/main/AndroidManifest.xml= — add
+  =FOREGROUND_SERVICE_CAMERA= permission
+
+*** Steps
+
+- [ ] *Step 1: Enable CameraX deps*
+
+In =app/build.gradle.kts= =dependencies { }=, add:
+
+#+begin_src kotlin
+implementation(libs.camerax.core)
+implementation(libs.camerax.camera2)
+implementation(libs.camerax.lifecycle)
+implementation(libs.camerax.video)
+implementation(libs.camerax.view)
+#+end_src
+
+- [ ] *Step 2: Manifest*
+
+Add the camera foreground-service type permission:
+
+#+begin_src xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+#+end_src
+
+- [ ] *Step 3: Build*
+
+=./gradlew :app:assembleDebug= → expect BUILD SUCCESSFUL.
+
+- [ ] *Step 4: Commit*
+
+=git commit -m "chore(deps): wire CameraX + camera foreground-service permission"=
+
+** Task 2: =RecordingService= foreground service
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/capture/RecordingService.kt=
+- Modify: =AndroidManifest.xml= — declare the service with
+  =foregroundServiceType="microphone|camera"=
+
+*** Steps
+
+- [ ] *Step 1: Service skeleton*
+
+#+begin_src kotlin
+package uk.storitad.capture.capture
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import uk.storitad.capture.R
+
+class RecordingService : Service() {
+
+    inner class LocalBinder : Binder() { val service get() = this@RecordingService }
+
+    private val binder = LocalBinder()
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        ensureChannel()
+        startForeground(NOTIF_ID, buildNotification("Recording…"))
+        return START_NOT_STICKY
+    }
+
+    fun updateElapsed(ms: Long) {
+        val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        mgr.notify(NOTIF_ID, buildNotification(formatElapsed(ms)))
+    }
+
+    private fun ensureChannel() {
+        val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (mgr.getNotificationChannel(CHANNEL) == null) {
+            mgr.createNotificationChannel(
+                NotificationChannel(CHANNEL, "Recording", NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+    }
+
+    private fun buildNotification(text: String): Notification =
+        NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentTitle("Storitad")
+            .setContentText(text)
+            .setOngoing(true)
+            .build()
+
+    private fun formatElapsed(ms: Long): String {
+        val sec = ms / 1000; return "%d:%02d".format(sec / 60, sec % 60)
+    }
+
+    companion object {
+        const val CHANNEL = "storitad.recording"
+        const val NOTIF_ID = 1001
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Manifest entry*
+
+#+begin_src xml
+<service
+    android:name=".capture.RecordingService"
+    android:exported="false"
+    android:foregroundServiceType="microphone|camera" />
+#+end_src
+
+- [ ] *Step 3: Wire into =RecordingScreen=*
+
+At the top of the effect that starts =AudioRecorder=, start + bind the
+service; at stop/cancel, unbind + =stopSelf()=. Poll elapsed ms every 1 s
+and call =service.updateElapsed()=.
+
+- [ ] *Step 4: Request =POST_NOTIFICATIONS= at runtime*
+
+Add an =accompanist-permissions= state for =POST_NOTIFICATIONS= on
+=RecordingScreen= and request it alongside =RECORD_AUDIO=. The recording
+itself must proceed even if notification permission is denied (show a
+one-line toast-style status instead).
+
+- [ ] *Step 5: Device verification*
+
+Record voice → background the app → confirm the notification persists and
+timer updates → foreground again → stop cleanly.
+
+- [ ] *Step 6: Commit*
+
+=git commit -m "feat(capture): ForegroundService-backed recording with notification"=
+
+** Task 3: Pause / resume for voice
+
+*** Files
+- Modify: =capture/AudioRecorder.kt= — add =pause()= / =resume()= over
+  =MediaRecorder.pause()= (API 24+)
+- Modify: =ui/RecordingScreen.kt= — add pause/resume toggle button, pause
+  the elapsed timer while paused
+
+*** Steps
+
+- [ ] *Step 1: AudioRecorder.pause / resume*
+
+#+begin_src kotlin
+fun pause() { recorder?.pause() }
+fun resume() { recorder?.resume() }
+#+end_src
+
+- [ ] *Step 2: UI state*
+
+Track =isPaused: Boolean= next to =recorder=. When toggling on, stop the
+elapsed-update coroutine (break out of the =while= loop) and call
+=pause()=. When toggling off, =resume()= and restart the loop with a
+=startAt= adjusted by the accumulated paused duration.
+
+- [ ] *Step 3: Commit*
+
+=git commit -m "feat(capture): pause/resume for voice recordings"=
+
+** Task 4: Audio waveform during recording
+
+*** Files
+- Modify: =capture/AudioRecorder.kt= — expose
+  =amplitudes: StateFlow<FloatArray>=
+- Modify: =ui/RecordingScreen.kt= — render a live =Canvas= waveform
+
+*** Steps
+
+- [ ] *Step 1: Amplitude polling*
+
+#+begin_src kotlin
+private val _amps = MutableStateFlow(FloatArray(40))
+val amplitudes: StateFlow<FloatArray> = _amps
+private var pollJob: Job? = null
+
+// inside start(): launch a coroutine on Main that polls every 50ms
+pollJob = scope.launch {
+    val ring = FloatArray(40)
+    var i = 0
+    while (isActive && recorder != null) {
+        val max = recorder?.maxAmplitude ?: 0
+        ring[i] = (max.coerceAtMost(32767) / 32767f)
+        i = (i + 1) % ring.size
+        _amps.value = ring.copyOf()
+        delay(50)
+    }
+}
+// inside stop()/cancel(): pollJob?.cancel()
+#+end_src
+
+- [ ] *Step 2: Compose waveform*
+
+A =Canvas(Modifier.height(72.dp).fillMaxWidth())= that draws vertical bars
+from the =amplitudes= =FloatArray=. Bar height = =amp * canvasHeight=, bar
+width = =canvasWidth / amps.size=, gap = 2 px. Bar colour = primary.
+
+- [ ] *Step 3: Commit*
+
+=git commit -m "feat(ui): live waveform visualisation on recording screen"=
+
+** Task 5: Video recording with CameraX
+
+*** Files
+- Create: =capture/VideoRecorder.kt= — =ProcessCameraProvider= + =Recorder=
+  wrapper with =start= / =stop= / =cancel=
+- Create: =ui/VideoRecordingScreen.kt= — =PreviewView= + overlayed timer
+  and stop button, flip-camera button
+- Modify: =ui/Nav.kt= — new =VideoRecording= route, remove "Coming in
+  Phase 2" from the Home video card and wire it up
+- Modify: =ui/ReviewScreen.kt= + =ui/DetailScreen.kt= — if media is VIDEO,
+  show a =PlayerView= (ExoPlayer) instead of the audio player
+
+*** Steps
+
+- [ ] *Step 1: =VideoRecorder= skeleton*
+
+#+begin_src kotlin
+package uk.storitad.capture.capture
+
+import android.content.Context
+import androidx.camera.core.CameraSelector
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.lifecycle.LifecycleOwner
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+class VideoRecorder(private val context: Context) {
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private lateinit var videoCapture: VideoCapture<Recorder>
+    private var active: Recording? = null
+    private var startedAtMs = 0L
+    var useFrontCamera = true
+
+    suspend fun bind(owner: LifecycleOwner, preview: androidx.camera.core.Preview) {
+        val provider = ProcessCameraProvider.getInstance(context).get()
+        val recorder = Recorder.Builder()
+            .setQualitySelector(QualitySelector.from(Quality.HD))
+            .build()
+        videoCapture = VideoCapture.withOutput(recorder)
+        val selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
+                       else CameraSelector.DEFAULT_BACK_CAMERA
+        provider.unbindAll()
+        provider.bindToLifecycle(owner, selector, preview, videoCapture)
+    }
+
+    @androidx.annotation.RequiresPermission(allOf = [
+        android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA
+    ])
+    fun start(target: File) {
+        val opts = FileOutputOptions.Builder(target).build()
+        active = videoCapture.output
+            .prepareRecording(context, opts)
+            .withAudioEnabled()
+            .start(executor) { /* event callbacks: finalize, error */ }
+        startedAtMs = System.currentTimeMillis()
+    }
+
+    fun stop(): Long {
+        active?.stop()
+        active = null
+        return System.currentTimeMillis() - startedAtMs
+    }
+
+    fun cancel() { active?.stop(); active = null }
+}
+#+end_src
+
+- [ ] *Step 2: =VideoRecordingScreen=*
+
+Compose screen with =AndroidView { PreviewView(it) }= filling the
+background, elapsed overlay top-centre, flip-camera top-right, red record
+button bottom-centre. Use the same =DraftHolder= pattern (=kind = "video"=,
+extension =mp4=, mime =video/mp4=).
+
+- [ ] *Step 3: Wire Home card*
+
+Remove =enabled = false= and "Coming in Phase 2" subtitle from the video
+=ActionCard= in =HomeScreen.kt=; navigate to =Route.VideoRecording.path=.
+
+- [ ] *Step 4: Playback*
+
+Add =androidx.media3:media3-exoplayer= and
+=androidx.media3:media3-ui= to the catalog. In =ReviewScreen= and
+=DetailScreen=, branch on =entry.mediaType == VIDEO= and render
+=PlayerView= with ExoPlayer. Audio-only entries keep the =AudioPlayer=
+path.
+
+- [ ] *Step 5: Device verification*
+
+Record a 10-second video, confirm playback in Review, save with subject
+"video smoke", confirm Detail playback + file under the inbox as =.mp4=.
+
+- [ ] *Step 6: Commit*
+
+=git commit -m "feat(capture): video recording via CameraX, ExoPlayer playback"=
+
+** Task 6: Configurable recipients UI
+
+*** Files
+- Create: =metadata/RecipientsRepository.kt= — seeds
+  =filesDir/recipients.json= from assets on first run, exposes
+  =list()/save()=
+- Create: =ui/SettingsScreen.kt= — add/edit/remove recipients
+- Modify: =ui/Nav.kt=, =MainActivity.kt=, =HomeScreen.kt= — new Settings
+  entry (gear icon in top bar)
+- Modify: =ui/MetadataScreen.kt= — load presets via repository instead of
+  direct =assets= read
+
+*** Steps
+
+- [ ] *Step 1: Repository*
+
+#+begin_src kotlin
+class RecipientsRepository(private val ctx: Context) {
+    private val file get() = File(ctx.filesDir, "recipients.json")
+    private val json = Json { prettyPrint = true; encodeDefaults = true }
+
+    fun list(): List<Recipient> = ensureSeeded().let {
+        json.decodeFromString(RecipientsConfig.serializer(), file.readText()).recipients
+    }
+
+    fun save(items: List<Recipient>) {
+        file.writeText(json.encodeToString(
+            RecipientsConfig.serializer(), RecipientsConfig(items)
+        ))
+    }
+
+    private fun ensureSeeded() {
+        if (file.exists()) return
+        val text = ctx.assets.open("recipients.json").bufferedReader().use { it.readText() }
+        file.writeText(text)
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Settings screen*
+
+List of rows with emoji + label + id + delete icon. Bottom sticky "Add"
+button opens a dialog with id/label/emoji text fields. Validation: id
+lowercase ASCII, must be unique.
+
+- [ ] *Step 3: Commit*
+
+=git commit -m "feat(metadata): configurable recipient presets with settings UI"=
+
+** Task 7: End-to-end verification + tag
+
+- [ ] *Step 1: Unit + integration tests*
+
+Run =./gradlew :app:testDebugUnitTest= — all green.
+
+- [ ] *Step 2: Device smoke*
+
+Full flow: voice record with pause/resume + waveform + notification,
+backgrounded-and-resumed; video record front + flip to rear; add a new
+recipient via Settings; use it on a fresh capture; verify sidecar JSON.
+
+- [ ] *Step 3: Tag*
+
+=git tag -a v0.2.0 -m "Phase 2: video, notification, pause/resume, waveform, configurable recipients"=
+
+** Out of Scope (deferred to Phase 3/4)
+
+- On-device Whisper transcription (Phase 3)
+- Reverse geocoding of =locationName= (Phase 3 or ingest-side)
+- Public =Documents/Storitad/inbox/= via =MediaStore= (Phase 4)
+- Widget for quick voice capture (Phase 4)
+- Bulk archive / transfer verification (Phase 4)
