@@ -56,6 +56,12 @@ dependencies {
     implementation(libs.kotlinx.datetime)
     implementation(libs.accompanist.permissions)
 
+    implementation(libs.camerax.core)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.video)
+    implementation(libs.camerax.view)
+
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
