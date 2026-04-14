@@ -61,12 +61,14 @@ def _transcribe_cfg(cfg: Config) -> transcribe.TranscriberConfig:
     )
 
 
-def process_pair(sidecar_path: Path, media_path: Path, cfg: Config, alias_map: dict[str, list[str]]) -> Path:
+def process_pair(sidecar_path: Path, media_path: Path, cfg: Config, alias_map: dict[str, list[str]] | None = None) -> Path:
     sc = sidecar.load(sidecar_path)
 
-    # Expand aliases into the recipients list stored on disk so ingest-side
-    # expansion is visible to anyone reading the .md later.
-    sc.raw["recipients"] = aliases_mod.expand(sc.recipients, alias_map)
+    # Recipients are stored verbatim — no auto-expansion. If the user picked
+    # `family`, the entry is tagged `family` (not each person individually).
+    # Aliases are available as a navigation mechanism in the rendered site
+    # if we later choose to filter by alias membership, but we no longer
+    # smear the tags so that every entry looks like it's for everyone.
 
     server_transcript = None
     server_model = None
@@ -83,7 +85,35 @@ def process_pair(sidecar_path: Path, media_path: Path, cfg: Config, alias_map: d
         server_transcript=server_transcript,
         server_model=server_model,
     )
+
+    # Phase-2-of-ingest item promoted to Phase 1: mark the sidecar processed
+    # on the phone so the Pending list clears.
+    try:
+        _writeback_processed(sidecar_path, sc, cfg)
+    except Exception as e:
+        click.echo(f"  writeback skipped: {e}", err=True)
+
     return md
+
+
+def _writeback_processed(sidecar_path: Path, sc, cfg: Config) -> None:
+    import json
+    import subprocess
+    from datetime import datetime, timezone
+
+    sc.raw["processed"] = True
+    sidecar_path.write_text(json.dumps(sc.raw, indent=2))
+
+    subprocess.check_call([
+        "adb", "push", str(sidecar_path),
+        f"{pull.PHONE_INBOX_PATH}/{sidecar_path.name}",
+    ], stdout=subprocess.DEVNULL)
+
+    dt = datetime.fromisoformat(sc.captured_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+    archived = cfg.archive_root / "processed" / f"{dt.year:04d}" / f"{dt.month:02d}"
+    archived.mkdir(parents=True, exist_ok=True)
+    target = archived / sidecar_path.name
+    sidecar_path.replace(target)
 
 
 @click.command()

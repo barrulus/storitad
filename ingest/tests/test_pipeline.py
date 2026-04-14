@@ -68,11 +68,9 @@ def test_full_render(tmp_path: Path):
                                     location=None,
                                     mediaFile="20260412-094500-voice.m4a"))
 
-    alias_map = aliases.load_aliases(None)
-
     for j, m in [(j1, m1), (j2, m2), (j3, m3)]:
         sc = sidecar.load(j)
-        sc.raw["recipients"] = aliases.expand(sc.recipients, alias_map)
+        # Recipients are stored verbatim now — no auto-expansion.
         render_markdown.write_entry(
             root=archive, sc=sc, media_src=m,
             server_transcript=f"This is the transcript for {sc.subject}.",
@@ -91,12 +89,10 @@ def test_full_render(tmp_path: Path):
     # Media file copied next to markdown
     assert (april / "20260414-153200-voice.m4a").exists()
 
-    # family alias expanded ingest-side
+    # recipients are stored verbatim — family is NOT auto-expanded
     import yaml as _yaml
     fm = _yaml.safe_load(mds[2].read_text().split("---", 2)[1])
-    assert "family" in fm["recipients"]
-    assert "griffin" in fm["recipients"]
-    assert "emma" in fm["recipients"]
+    assert fm["recipients"] == ["family"]
 
     # Site renders
     render_site.render(archive)

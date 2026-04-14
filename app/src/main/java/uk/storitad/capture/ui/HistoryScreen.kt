@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,11 +29,13 @@ fun EntryListScreen(
     onBack: () -> Unit
 ) {
     val ctx = LocalContext.current
+    val repo = remember { MetadataRepository(FileManager.inboxDir(ctx)) }
     var refreshKey by remember { mutableStateOf(0) }
     val entries by produceState(initialValue = emptyList<EntryMetadata>(), refreshKey) {
-        val all = MetadataRepository(FileManager.inboxDir(ctx)).list()
+        val all = repo.list()
         value = if (onlyPending) all.filter { !it.processed } else all
     }
+    var pendingDelete by remember { mutableStateOf<EntryMetadata?>(null) }
 
     Scaffold(
         topBar = {
@@ -57,16 +61,38 @@ fun EntryListScreen(
                         onOpen = { onOpen(entry.mediaFile.substringBeforeLast('.')) },
                         onEdit = if (onlyPending)
                             { { onEdit(entry.mediaFile.substringBeforeLast('.')) } }
-                        else null
+                        else null,
+                        onDelete = { pendingDelete = entry }
                     )
                 }
             }
         }
     }
+
+    pendingDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    repo.delete(target)
+                    pendingDelete = null
+                    refreshKey++
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
+            title = { Text("Delete entry?") },
+            text = { Text("\"${target.subject}\" and its media will be removed.") }
+        )
+    }
 }
 
 @Composable
-private fun EntryRow(entry: EntryMetadata, onOpen: () -> Unit, onEdit: (() -> Unit)? = null) {
+private fun EntryRow(
+    entry: EntryMetadata,
+    onOpen: () -> Unit,
+    onEdit: (() -> Unit)?,
+    onDelete: () -> Unit
+) {
     val zone = runCatching { TimeZone.of(entry.timezone) }
         .getOrDefault(TimeZone.currentSystemDefault())
     val ldt = entry.capturedAt.toLocalDateTime(zone)
@@ -84,6 +110,9 @@ private fun EntryRow(entry: EntryMetadata, onOpen: () -> Unit, onEdit: (() -> Un
                 )
                 if (onEdit != null) {
                     TextButton(onClick = onEdit) { Text("Edit") }
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete")
                 }
             }
             Text(
