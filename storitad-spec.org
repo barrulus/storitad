@@ -3059,3 +3059,52 @@ recipient via Settings; use it on a fresh capture; verify sidecar JSON.
 - Public =Documents/Storitad/inbox/= via =MediaStore= (Phase 4)
 - Widget for quick voice capture (Phase 4)
 - Bulk archive / transfer verification (Phase 4)
+
+* Revisions — 2026-04-14 (iteration 2)
+
+** Recipient aliases
+
+The =recipients= field in the sidecar is semantically a *tag set* — a flat
+list of ids that combines real people and scope-aliases. No schema change,
+no sidecar version bump.
+
+*** Canonical ids
+
+| id      | kind   | expansion on ingest           |
+|---------+--------+-------------------------------|
+| griffin | person | (none — leaf)                 |
+| julian  | person | (none — leaf)                 |
+| casper  | person | (none — leaf)                 |
+| emma    | person | (none — leaf)                 |
+| family  | alias  | =[griffin, julian, casper, emma]= |
+| general | scope  | (none — means "not directed") |
+
+The capture app never expands aliases. It writes the ids the user selected
+verbatim, so round-tripping is lossless:
+
+- Picking just the =family= chip writes =recipients: ["family"]=.
+- Picking =casper= and =emma= writes =recipients: ["casper", "emma"]=.
+- Picking =general= writes =recipients: ["general"]= (explicitly untargeted).
+
+*** Ingest-side contract
+
+Storitad Ingest (sixseven-side, not in this repo) is responsible for:
+
+1. Expanding aliases at journal-write time: if =family= is present, emit org
+   tags for each expanded person id *in addition to* the =family= tag so the
+   entry is reachable from both angles.
+2. Treating =general= as a hint to omit per-person tags (the entry still
+   gets its type tag like =:voicenote:=).
+3. Any future alias (e.g. =boys= → =[griffin, julian, casper]=) is declared
+   in the ingest configuration, not on the phone. The phone is allowed to
+   write unknown ids; the ingest script falls back to tagging verbatim.
+
+*** App behaviour
+
+- Settings lets the user add any id (person or alias) with lowercase-ASCII
+  validation. The app does not know the difference.
+- Metadata chips are shown in the order recipients.json declares; adding a
+  new alias means appending it to that file.
+- No UI distinction between "person" and "alias" in Phase 2. If that becomes
+  useful later, add a =kind= field on =Recipient= (default =person=) and
+  style accordingly — fully backwards compatible.
