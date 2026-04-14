@@ -25,7 +25,7 @@ val TINY_EN = ModelSpec(
     id = "tiny.en",
     filename = "ggml-tiny.en.bin",
     url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
-    sha256 = "db243b27e6154c355952f2fa0e84a6ea17a3d5bcf05c68cedb72b1da8c1b0b33",
+    sha256 = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
     sizeBytes = 77_704_715L
 )
 
