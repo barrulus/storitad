@@ -1,0 +1,2646 @@
+#+TITLE: Storitad — Legacy Journal Capture App
+#+SUBTITLE: Technical Specification for Android (GrapheneOS)
+#+AUTHOR: Bazza
+#+DATE: 2026-04-14
+#+STARTUP: overview
+
+* Overview
+
+Storitad is a minimal, privacy-first Android app for recording voice
+and video journal entries on a GrapheneOS device (Pixel 9 Pro). It captures
+media with structured metadata and stores everything as local files — no
+database, no network, no cloud. Entries are later transferred via USB to
+sixseven for processing into an org-mode journal.
+
+The app is one half of a two-part system:
+
+1. *Storitad* (this spec) — Android app, capture-only
+2. *Storitad Ingest* (separate spec) — sixseven-side script that processes
+   captured media into org-mode journal entries with Whisper transcription
+
+** Design Principles
+
+- Capture friction must be minimal — two taps to start recording
+- All data stays on-device, no network permissions requested
+- Output is plain files on the filesystem, not locked in app-internal storage
+- Metadata sidecar format is the contract between Capture and Ingest
+- The app should be buildable from source via Nix (reproducible)
+- Material You / Material 3 theming, respecting system dark mode
+- No Google Play Services dependencies (GrapheneOS-compatible)
+
+** Target Device
+
+| Property       | Value                  |
+|----------------+------------------------|
+| Device         | Google Pixel 9 Pro     |
+| OS             | GrapheneOS             |
+| Android API    | 34+ (Android 14)       |
+| Distribution   | Sideload APK / F-Droid |
+| Play Services  | None                   |
+
+* Architecture
+
+** Technology Stack
+
+| Layer        | Choice                          | Rationale                              |
+|--------------+---------------------------------+----------------------------------------|
+| Language     | Kotlin                          | Modern Android standard                |
+| UI           | Jetpack Compose + Material 3    | Declarative, minimal boilerplate       |
+| Media        | CameraX + MediaRecorder         | Stable APIs, no Play Services dep      |
+| Storage      | Scoped Storage / MediaStore     | Or SAF for user-chosen directory       |
+| Transcription| whisper.cpp via JNI (optional)  | On-device, offline, privacy-first      |
+| Build        | Gradle (Kotlin DSL)             | Standard, Nix-wrappable                |
+| Min SDK      | 34                              | Pixel 9 Pro baseline                   |
+
+** Module Structure
+
+#+begin_src text
+storitad/
+├── app/
+│   └── src/main/
+│       ├── java/uk/storitad/capture/
+│       │   ├── MainActivity.kt
+│       │   ├── ui/
+│       │   │   ├── theme/
+│       │   │   │   └── Theme.kt
+│       │   │   ├── HomeScreen.kt          # Main screen with record buttons
+│       │   │   ├── MetadataScreen.kt      # Post-capture metadata form
+│       │   │   ├── ReviewScreen.kt        # Playback + confirm/discard
+│       │   │   └── HistoryScreen.kt       # Browse past captures
+│       │   ├── capture/
+│       │   │   ├── AudioRecorder.kt       # Voice recording via MediaRecorder
+│       │   │   ├── VideoRecorder.kt       # Video recording via CameraX
+│       │   │   └── CaptureState.kt        # Recording state machine
+│       │   ├── metadata/
+│       │   │   ├── EntryMetadata.kt       # Data class for sidecar content
+│       │   │   └── MetadataWriter.kt      # Serialises to JSON sidecar
+│       │   ├── storage/
+│       │   │   ├── FileManager.kt         # File naming, directory management
+│       │   │   └── ExportManager.kt       # Future: bulk export helper
+│       │   └── whisper/                   # Optional phase 2
+│       │       ├── WhisperModel.kt
+│       │       └── Transcriber.kt
+│       ├── res/
+│       └── AndroidManifest.xml
+├── build.gradle.kts
+├── settings.gradle.kts
+├── gradle.properties
+└── flake.nix                              # Nix build wrapper
+#+end_src
+
+* User Flow
+
+** Happy Path
+
+#+begin_src text
+[Open App]
+    │
+    ▼
+[Home Screen]
+    │
+    ├── Tap "Voice" ──► [Recording Screen: audio waveform, timer, stop button]
+    │                         │
+    │                         ▼ (stop)
+    │                    [Review Screen: playback, re-record, continue]
+    │                         │
+    │                         ▼ (continue)
+    │                    [Metadata Screen: subject, recipient, tags, mood, notes]
+    │                         │
+    │                         ▼ (save)
+    │                    [Saved ✓ — return to Home]
+    │
+    ├── Tap "Video" ──► [Camera Preview: record button, flip camera, timer]
+    │                         │
+    │                         ▼ (stop)
+    │                    [Review Screen: video playback, re-record, continue]
+    │                         │
+    │                         ▼ (continue)
+    │                    [Metadata Screen: same form as voice]
+    │                         │
+    │                         ▼ (save)
+    │                    [Saved ✓ — return to Home]
+    │
+    └── Tap "History" ─► [List of past captures: date, type icon, subject]
+                              │
+                              ▼ (tap entry)
+                         [Detail: playback + metadata, edit, delete]
+#+end_src
+
+** Quick Capture Mode
+
+For moments when you just need to hit record immediately:
+
+- Long-press the app icon launches directly into voice recording
+- A persistent notification during recording shows elapsed time + stop button
+- After stopping, the metadata screen appears
+- "Subject" is the only required field; everything else can be skipped
+
+* Data Model
+
+** EntryMetadata
+
+#+begin_src kotlin
+@Serializable
+data class EntryMetadata(
+    // Identity
+    val id: String,                          // UUID, generated at capture start
+    val version: Int = 1,                    // Sidecar format version
+
+    // Temporal
+    val capturedAt: Instant,                 // UTC timestamp of recording start
+    val duration: Duration,                  // Recording length
+    val timezone: String,                    // e.g. "Europe/London"
+
+    // Media
+    val mediaFile: String,                   // Relative filename, e.g. "20260414-153200.m4a"
+    val mediaType: MediaType,                // VOICE or VIDEO
+    val mimeType: String,                    // e.g. "audio/mp4", "video/mp4"
+
+    // Journal metadata (user-provided)
+    val subject: String,                     // Brief title / what this is about
+    val recipients: List<String> = listOf("family"),
+                                             // Who this is for: "casper", "family", "general"
+    val mood: String? = null,                // Optional: "happy", "reflective", "proud", etc.
+    val tags: List<String> = emptyList(),    // Free-form tags
+    val notes: String? = null,               // Additional context, free text
+
+    // Device context (auto-captured)
+    val device: String = Build.MODEL,        // e.g. "Pixel 9 Pro"
+    val appVersion: String,                  // Storitad version string
+
+    // Transcription (optional, phase 2)
+    val transcriptDraft: String? = null,     // On-device Whisper output
+    val transcriptModel: String? = null,     // e.g. "whisper-tiny.en"
+
+    // Processing status (used by Ingest, written by Capture)
+    val processed: Boolean = false           // Ingest sets true after import
+)
+
+enum class MediaType { VOICE, VIDEO }
+#+end_src
+
+** Recipient Presets
+
+Configurable list stored as a simple JSON file in the app's data directory.
+Default:
+
+#+begin_src json
+{
+  "recipients": [
+    { "id": "casper", "label": "Casper", "emoji": "🎮" },
+    { "id": "family", "label": "Family", "emoji": "🏠" },
+    { "id": "general", "label": "General", "emoji": "📝" }
+  ]
+}
+#+end_src
+
+New recipients can be added via a settings screen. This keeps the metadata
+form fast — just tap a chip rather than typing.
+
+** Mood Presets
+
+A fixed palette of moods, presented as selectable chips:
+
+| Mood        | Emoji |
+|-------------+-------|
+| happy       | 😊    |
+| proud       | 💪    |
+| reflective  | 🤔    |
+| grateful    | 🙏    |
+| excited     | 🎉    |
+| calm        | 😌    |
+| nostalgic   | 💭    |
+| loving      | ❤️    |
+| bittersweet | 🥹    |
+| hopeful     | 🌅    |
+
+* File Storage
+
+** Directory Layout
+
+All output goes to a user-accessible directory on shared storage:
+
+#+begin_src text
+/storage/emulated/0/Documents/Storitad/
+├── inbox/                          # Pending transfer to sixseven
+│   ├── 20260414-153200-voice.m4a
+│   ├── 20260414-153200-voice.json  # Sidecar metadata
+│   ├── 20260414-171500-video.mp4
+│   ├── 20260414-171500-video.json
+│   └── ...
+├── archive/                        # After confirmed transfer (optional)
+│   └── 2026/
+│       └── 04/
+│           └── ...
+└── config/
+    └── recipients.json
+#+end_src
+
+** File Naming Convention
+
+#+begin_example
+{YYYYMMDD}-{HHmmss}-{type}.{ext}
+#+end_example
+
+Examples:
+- =20260414-153200-voice.m4a=
+- =20260414-153200-voice.json=
+- =20260414-171500-video.mp4=
+- =20260414-171500-video.json=
+
+The timestamp prefix is generated at recording start. The sidecar =.json=
+file always shares the same base name as its media file.
+
+** Sidecar Example
+
+#+begin_src json
+{
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "version": 1,
+  "capturedAt": "2026-04-14T15:32:00Z",
+  "duration": "PT2M34S",
+  "timezone": "Europe/London",
+  "mediaFile": "20260414-153200-voice.m4a",
+  "mediaType": "VOICE",
+  "mimeType": "audio/mp4",
+  "subject": "Picking Casper up from school",
+  "recipients": ["casper"],
+  "mood": "happy",
+  "tags": ["school", "geometry-dash", "daily"],
+  "notes": "He beat the impossible level he's been stuck on for weeks",
+  "device": "Pixel 9 Pro",
+  "appVersion": "0.1.0",
+  "transcriptDraft": null,
+  "transcriptModel": null,
+  "processed": false
+}
+#+end_src
+
+* Recording Specifications
+
+** Voice Recording
+
+| Parameter    | Value                     |
+|--------------+---------------------------|
+| Format       | AAC in M4A container      |
+| Sample rate  | 44100 Hz                  |
+| Channels     | Mono                      |
+| Bitrate      | 128 kbps                  |
+| Max duration | 30 minutes (configurable) |
+
+AAC/M4A chosen over WAV for storage efficiency while maintaining good
+quality. Whisper handles M4A natively via ffmpeg on the ingest side.
+
+** Video Recording
+
+| Parameter    | Value                      |
+|--------------+----------------------------|
+| Format       | H.264 in MP4 container     |
+| Resolution   | 1080p (front camera)       |
+| Frame rate   | 30 fps                     |
+| Audio        | AAC stereo, 128 kbps       |
+| Max duration | 10 minutes (configurable)  |
+| Camera       | Front-facing by default    |
+
+Front camera default because these are personal messages to your kids —
+they want to see your face. Flip-to-rear available for showing something.
+
+* UI Design
+
+** Home Screen
+
+Minimal. Three elements:
+
+1. Large "Record Voice" button (microphone icon) — primary action
+2. Large "Record Video" button (camera icon) — secondary action
+3. Bottom: "History" link — tertiary, doesn't compete for attention
+
+No feed, no timeline, no stats. This is a capture tool, not a consumption tool.
+
+** Metadata Screen
+
+Appears after recording stops and the user confirms the take.
+
+| Field      | Type                    | Required | Default     |
+|------------+-------------------------+----------+-------------|
+| Subject    | Text input (single line)| Yes      | —           |
+| Recipients | Chip group (multi)      | No       | ["family"]  |
+| Mood       | Chip group (single)     | No       | —           |
+| Tags       | Text input (comma-sep)  | No       | —           |
+| Notes      | Text area (multi-line)  | No       | —           |
+
+"Save" button at bottom. "Discard" in top bar. No confirmation dialog on
+save — it should feel instant and low-friction. Confirmation dialog on
+discard (you're throwing away a recording).
+
+** Recording Screen (Voice)
+
+- Elapsed time (large, centered)
+- Audio waveform visualisation (simple amplitude bars)
+- Pause/Resume button
+- Stop button (large, red)
+- Cancel button (small, top-left)
+
+** Recording Screen (Video)
+
+- Camera preview (full screen, front camera)
+- Elapsed time overlay (top)
+- Record/Stop toggle (bottom center)
+- Flip camera button (bottom right)
+- Cancel button (top-left)
+
+** History Screen
+
+Simple chronological list (newest first):
+
+#+begin_src text
+┌──────────────────────────────────────┐
+│ 🎙️ Picking Casper up from school    │
+│    14 Apr 2026, 15:32 · 2m 34s      │
+│    🎮 Casper · 😊 happy              │
+├──────────────────────────────────────┤
+│ 🎥 Walking on Rhossili              │
+│    13 Apr 2026, 11:15 · 4m 12s      │
+│    🏠 Family · 😌 calm               │
+├──────────────────────────────────────┤
+│ 🎙️ Note about the Vantage handover  │
+│    12 Apr 2026, 09:45 · 1m 08s      │
+│    📝 General · 🤔 reflective        │
+└──────────────────────────────────────┘
+#+end_src
+
+Tapping an entry opens a detail view with playback, full metadata display,
+edit capability, and delete.
+
+* Permissions
+
+Only what is strictly necessary. No network permission at all.
+
+| Permission                    | Reason                            |
+|-------------------------------+-----------------------------------|
+| =RECORD_AUDIO=                | Voice and video recording         |
+| =CAMERA=                      | Video recording                   |
+| =WRITE_EXTERNAL_STORAGE=      | Saving to Documents (pre-API 30) |
+| =MANAGE_EXTERNAL_STORAGE=     | Or use SAF for directory access   |
+| =FOREGROUND_SERVICE=          | Recording continues if app backgrounded |
+| =POST_NOTIFICATIONS=          | Recording-in-progress notification |
+
+Explicitly NOT requested:
+- =INTERNET= / =ACCESS_NETWORK_STATE= — no network access at all
+- =ACCESS_FINE_LOCATION= / =ACCESS_COARSE_LOCATION= — no location tracking
+- Any Google Play Services permissions
+
+* USB Transfer Workflow
+
+When the Pixel is connected to sixseven via USB:
+
+#+begin_src bash
+# On sixseven — pull all pending captures
+# (assuming MTP mount or adb)
+
+# Option A: adb pull
+adb pull /storage/emulated/0/Documents/Storitad/inbox/ \
+         ~/journal/inbox/
+
+# Option B: MTP via gio (GNOME) or jmtpfs
+jmtpfs /mnt/pixel
+cp -r /mnt/pixel/Documents/Storitad/inbox/* ~/journal/inbox/
+fusermount -u /mnt/pixel
+
+# Option C: Script it (recommended)
+# ~/bin/storitad-pull — a small wrapper that handles mount + copy + verify
+#+end_src
+
+After successful transfer, the ingest script on sixseven processes the
+inbox and the user can optionally archive/delete from the phone.
+
+* Ingest Script (sixseven side) — Summary
+
+Separate deliverable, but the interface contract is:
+
+1. Reads =*.json= sidecar files from =~/journal/inbox/=
+2. For each entry:
+   a. Runs =whisper.cpp= on the media file (or uses =transcriptDraft= if present)
+   b. Generates an org-mode entry
+   c. Appends to =~/journal/journal.org= (or datetree structure)
+   d. Moves media to =~/journal/media/YYYY/MM/=
+   e. Moves sidecar to =~/journal/processed/=
+3. Org entry format:
+
+#+begin_src org
+,* Picking Casper up from school :voicenote:casper:
+:PROPERTIES:
+:ID:        a1b2c3d4-e5f6-7890-abcd-ef1234567890
+:CAPTURED:  [2026-04-14 Tue 15:32]
+:DURATION:  2m 34s
+:MEDIA:     [[file:media/2026/04/20260414-153200-voice.m4a]]
+:MOOD:      happy
+:DEVICE:    Pixel 9 Pro
+:END:
+
+Just picked Casper up from school. He was buzzing about
+beating some impossible level in Geometry Dash. He's been
+stuck on it for weeks and finally nailed it today...
+
+#+begin_comment
+Additional notes: He beat the impossible level he's been stuck on for weeks
+#+end_comment
+#+end_src
+
+* Build & Development
+
+** Dependencies (no Play Services)
+
+#+begin_src kotlin
+// build.gradle.kts (app)
+dependencies {
+    // Compose BOM
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+
+    // Navigation
+    implementation("androidx.navigation:navigation-compose:2.8.5")
+
+    // CameraX (video recording)
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-video:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
+
+    // Serialization
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.1")
+
+    // Permissions
+    implementation("com.google.accompanist:accompanist-permissions:0.36.0")
+}
+#+end_src
+
+** Nix Build
+
+#+begin_src nix
+# flake.nix — wraps Gradle build in a Nix derivation
+{
+  description = "Storitad - Legacy Journal App";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    android-nixpkgs.url = "github:nickel-lang/android-nixpkgs";
+  };
+
+  outputs = { self, nixpkgs, android-nixpkgs }: {
+    # Development shell with Android SDK
+    devShells.x86_64-linux.default = let
+      pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      android = android-nixpkgs.sdk.x86_64-linux (sdkPkgs: with sdkPkgs; [
+        build-tools-34-0-0
+        cmdline-tools-latest
+        platform-tools
+        platforms-android-34
+      ]);
+    in pkgs.mkShell {
+      buildInputs = [ android pkgs.jdk17 pkgs.gradle ];
+      ANDROID_HOME = "${android}/share/android-sdk";
+      JAVA_HOME = "${pkgs.jdk17}";
+    };
+  };
+}
+#+end_src
+
+* Phase Plan
+
+** Phase 1 — MVP (target: working capture + metadata)
+
+- [ ] Project scaffold: Compose + Material 3 + navigation
+- [ ] Voice recording with MediaRecorder
+- [ ] Metadata form (subject, recipients, mood, tags, notes)
+- [ ] JSON sidecar generation
+- [ ] File storage to Documents/Storitad/inbox/
+- [ ] History screen (read sidecar files, list entries)
+- [ ] Detail screen with audio playback
+- [ ] Quick-capture via app shortcut
+
+** Phase 2 — Video + Polish
+
+- [ ] Video recording with CameraX (front camera default)
+- [ ] Video playback in review/detail screens
+- [ ] Recording-in-progress notification
+- [ ] Pause/resume for voice recordings
+- [ ] Configurable recipients via settings
+- [ ] Audio waveform visualisation during recording
+
+** Phase 3 — On-Device Transcription
+
+- [ ] Integrate whisper.cpp via JNI (or whisper-android library)
+- [ ] Run Whisper tiny/base model after recording
+- [ ] Store transcript draft in sidecar
+- [ ] Display transcript in detail view with edit capability
+- [ ] Model download management (first-run setup)
+
+** Phase 4 — Quality of Life
+
+- [ ] Bulk archive/delete of transferred entries
+- [ ] Transfer verification (checksum in sidecar)
+- [ ] Widget for quick voice capture from home screen
+- [ ] Entry search and filtering
+- [ ] Export all metadata as single org file (phone-side backup)
+
+* Appendix A: Sidecar Format Changelog
+
+| Version | Date       | Changes                      |
+|---------+------------+------------------------------|
+|       1 | 2026-04-14 | Initial format               |
+
+The =version= field in the sidecar allows the ingest script to handle
+format evolution gracefully.
+
+* Appendix B: Why Not...
+
+| Alternative              | Reason rejected                                                      |
+|--------------------------+----------------------------------------------------------------------|
+| Flutter (m-lifelog fork)  | Google Play Services dep, Portuguese codebase, abandoned, overkill   |
+| React Native / PWA       | Camera/mic APIs weaker, storage access awkward on GrapheneOS         |
+| Existing journal app      | None combine voice+video+metadata+plainfile output                   |
+| Obsidian Mobile           | Closed source, complex, not a capture tool                          |
+| Termux + shell script     | UX too hostile for quick capture moments                             |
+| NotelyVoice fork          | Compose Multiplatform complexity, locked DB, no video                |
+
+* Phase 1 Implementation Plan
+
+#+begin_quote
+For agentic workers: use the =superpowers:subagent-driven-development= (recommended)
+or =superpowers:executing-plans= sub-skill to implement this plan task-by-task.
+Steps use =[ ]= checkbox syntax for tracking.
+#+end_quote
+
+** Goal
+
+Deliver the Phase 1 MVP of Storitad — a GrapheneOS-compatible Android app that
+records voice entries, attaches structured metadata, writes a JSON sidecar
+alongside the media file in =Documents/Storitad/inbox/=, and lets the user
+browse/play prior captures.
+
+** Architecture
+
+Single-module Kotlin Android app. Jetpack Compose + Material 3 UI,
+=navigation-compose= for screen flow, =MediaRecorder= for audio capture,
+=MediaPlayer= for playback, app-scoped external storage under
+=Documents/Storitad/inbox/= (Phase 4 migrates to public MediaStore
+collection). Metadata serialised via =kotlinx.serialization= as
+=<basename>.json= sidecars. No DI framework, no Room, no network deps.
+State held in plain Composable state + a small in-memory =DraftHolder=
+singleton for the capture → review → metadata handoff.
+
+** Tech Stack
+
+Kotlin 2.0.21, Gradle 8.10.2 (Kotlin DSL), AGP 8.7.3, Compose BOM 2024.12.01,
+Material 3, =navigation-compose= 2.8.5, =kotlinx-serialization-json= 1.7.3,
+=kotlinx-datetime= 0.6.1, =accompanist-permissions= 0.36.0. CameraX deps
+pre-declared in the version catalog but unused in Phase 1.
+
+** File Structure
+
+Build / tooling (repo root):
+
+- =settings.gradle.kts= — root project, includes =:app=
+- =build.gradle.kts= — root plugins block (=apply false=)
+- =gradle.properties= — JVM args, AndroidX flags
+- =gradle/libs.versions.toml= — version catalog (single source of truth)
+- =gradle/wrapper/gradle-wrapper.properties= — Gradle 8.10.2
+- =gradlew=, =gradlew.bat= — generated by =gradle wrapper=
+- =.gitignore= — already created
+- =flake.nix= — already created
+
+App module (=app/=):
+
+- =app/build.gradle.kts= — Android app plugin config
+- =app/proguard-rules.pro= — empty stub
+- =app/src/main/AndroidManifest.xml= — permissions, activity, shortcut
+- =app/src/main/res/values/{strings,themes,colors}.xml=
+- =app/src/main/res/xml/{shortcuts,backup_rules,data_extraction_rules}.xml=
+- =app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml=
+- =app/src/main/assets/recipients.json=
+
+Source (=app/src/main/java/uk/storitad/capture/=):
+
+- =MainActivity.kt= — single Activity hosting Compose =NavHost=
+- =ui/theme/{Theme,Color,Type}.kt= — Material 3 theme
+- =ui/Nav.kt= — route sealed class
+- =ui/HomeScreen.kt= — two buttons + history link
+- =ui/RecordingScreen.kt= — timer, stop, cancel
+- =ui/ReviewScreen.kt= — playback of just-recorded take
+- =ui/MetadataScreen.kt= — subject/recipients/mood/tags/notes form
+- =ui/HistoryScreen.kt= — list of prior captures
+- =ui/DetailScreen.kt= — playback + metadata + delete
+- =ui/drafts/DraftHolder.kt= — in-memory capture draft
+- =capture/AudioRecorder.kt= — =MediaRecorder= wrapper (AAC/M4A)
+- =capture/AudioPlayer.kt= — =MediaPlayer= wrapper
+- =capture/CaptureState.kt= — recording state sealed interface
+- =metadata/EntryMetadata.kt= — =@Serializable= data class + =MediaType=
+- =metadata/MetadataRepository.kt= — read/write sidecars, list entries
+- =storage/FileManager.kt= — filename generation, resolve inbox dir
+
+Tests (=app/src/test/java/uk/storitad/capture/=) — pure JVM unit tests only:
+
+- =metadata/EntryMetadataTest.kt= — JSON round-trip
+- =metadata/MetadataRepositoryTest.kt= — sidecar IO vs =TemporaryFolder=
+- =storage/FileManagerTest.kt= — filename determinism
+
+** Task 1: Gradle scaffold + version catalog
+
+*** Files
+- Create: =settings.gradle.kts=
+- Create: =build.gradle.kts=
+- Create: =gradle.properties=
+- Create: =gradle/libs.versions.toml=
+- Create: =gradle/wrapper/gradle-wrapper.properties=
+
+*** Steps
+
+- [ ] *Step 1: Write =settings.gradle.kts=*
+
+#+begin_src kotlin
+pluginManagement {
+    repositories {
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "Storitad"
+include(":app")
+#+end_src
+
+- [ ] *Step 2: Write =gradle.properties=*
+
+#+begin_src properties
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+kotlin.code.style=official
+android.nonTransitiveRClass=true
+#+end_src
+
+- [ ] *Step 3: Write =gradle/libs.versions.toml=*
+
+#+begin_src toml
+[versions]
+agp = "8.7.3"
+kotlin = "2.0.21"
+kotlinxSerialization = "1.7.3"
+kotlinxDatetime = "0.6.1"
+composeBom = "2024.12.01"
+navigation = "2.8.5"
+cameraX = "1.4.1"
+accompanist = "0.36.0"
+lifecycle = "2.8.7"
+activityCompose = "1.9.3"
+coreKtx = "1.15.0"
+junit = "4.13.2"
+
+[libraries]
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinxDatetime" }
+camerax-core = { module = "androidx.camera:camera-core", version.ref = "cameraX" }
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "cameraX" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "cameraX" }
+camerax-video = { module = "androidx.camera:camera-video", version.ref = "cameraX" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "cameraX" }
+accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist" }
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+#+end_src
+
+- [ ] *Step 4: Write root =build.gradle.kts=*
+
+#+begin_src kotlin
+plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.kotlin.serialization) apply false
+    alias(libs.plugins.compose.compiler) apply false
+}
+#+end_src
+
+- [ ] *Step 5: Write =gradle/wrapper/gradle-wrapper.properties=*
+
+#+begin_src properties
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+#+end_src
+
+- [ ] *Step 6: Generate wrapper jar and scripts*
+
+Run: =nix develop --command gradle wrapper --gradle-version 8.10.2=
+Expected: creates =gradlew=, =gradlew.bat=, =gradle/wrapper/gradle-wrapper.jar=.
+
+- [ ] *Step 7: Commit*
+
+#+begin_src bash
+git add .gitignore flake.nix settings.gradle.kts build.gradle.kts \
+        gradle.properties gradle/ gradlew gradlew.bat
+git commit -m "chore: gradle scaffold with version catalog and nix devshell"
+#+end_src
+
+** Task 2: App module — manifest, resources, theme
+
+*** Files
+- Create: =app/build.gradle.kts=
+- Create: =app/proguard-rules.pro=
+- Create: =app/src/main/AndroidManifest.xml=
+- Create: =app/src/main/res/values/strings.xml=
+- Create: =app/src/main/res/values/themes.xml=
+- Create: =app/src/main/res/values/colors.xml=
+- Create: =app/src/main/res/xml/shortcuts.xml=
+- Create: =app/src/main/res/xml/backup_rules.xml=
+- Create: =app/src/main/res/xml/data_extraction_rules.xml=
+- Create: =app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml=
+- Create: =app/src/main/assets/recipients.json=
+- Create: =app/src/main/java/uk/storitad/capture/ui/theme/{Color,Type,Theme}.kt=
+- Create: stub =app/src/main/java/uk/storitad/capture/MainActivity.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =app/build.gradle.kts=*
+
+#+begin_src kotlin
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.compose.compiler)
+}
+
+android {
+    namespace = "uk.storitad.capture"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "uk.storitad.capture"
+        minSdk = 34
+        targetSdk = 34
+        versionCode = 1
+        versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+    packaging {
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    }
+}
+
+dependencies {
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.extended)
+    implementation(libs.navigation.compose)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.datetime)
+    implementation(libs.accompanist.permissions)
+
+    debugImplementation(libs.compose.ui.tooling)
+
+    testImplementation(libs.junit)
+}
+#+end_src
+
+- [ ] *Step 2: Write =AndroidManifest.xml=*
+
+#+begin_src xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature android:name="android.hardware.microphone" android:required="true" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Storitad">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Storitad">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+    </application>
+</manifest>
+#+end_src
+
+- [ ] *Step 3: Write =res/values/strings.xml=*
+
+#+begin_src xml
+<resources>
+    <string name="app_name">Storitad</string>
+    <string name="record_voice">Record Voice</string>
+    <string name="record_video">Record Video</string>
+    <string name="history">History</string>
+    <string name="quick_capture_shortcut">Quick Voice</string>
+    <string name="quick_capture_shortcut_long">Start voice recording</string>
+    <string name="stop">Stop</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="discard">Discard</string>
+    <string name="re_record">Re-record</string>
+    <string name="continue_action">Continue</string>
+    <string name="subject_label">Subject</string>
+    <string name="recipients_label">Recipients</string>
+    <string name="mood_label">Mood</string>
+    <string name="tags_label">Tags</string>
+    <string name="notes_label">Notes</string>
+</resources>
+#+end_src
+
+- [ ] *Step 4: Write =res/values/themes.xml=*
+
+#+begin_src xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Storitad" parent="android:Theme.Material.NoActionBar" />
+</resources>
+#+end_src
+
+The real theme comes from Compose; the XML theme is only a neutral hosting
+theme for the Activity.
+
+- [ ] *Step 5: Write =res/values/colors.xml=*
+
+#+begin_src xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#FF1B1B1F</color>
+</resources>
+#+end_src
+
+- [ ] *Step 6: Write =res/xml/shortcuts.xml=*
+
+#+begin_src xml
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res-auto">
+    <shortcut
+        android:shortcutId="quick_voice"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/quick_capture_shortcut"
+        android:shortcutLongLabel="@string/quick_capture_shortcut_long">
+        <intent
+            android:action="uk.storitad.capture.action.QUICK_VOICE"
+            android:targetPackage="uk.storitad.capture"
+            android:targetClass="uk.storitad.capture.MainActivity" />
+    </shortcut>
+</shortcuts>
+#+end_src
+
+- [ ] *Step 7: Write =res/xml/backup_rules.xml=*
+
+#+begin_src xml
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content />
+#+end_src
+
+- [ ] *Step 8: Write =res/xml/data_extraction_rules.xml=*
+
+#+begin_src xml
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup />
+    <device-transfer />
+</data-extraction-rules>
+#+end_src
+
+- [ ] *Step 9: Write adaptive launcher icon =res/mipmap-anydpi-v26/ic_launcher.xml=*
+
+#+begin_src xml
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@android:drawable/ic_btn_speak_now" />
+</adaptive-icon>
+#+end_src
+
+- [ ] *Step 10: Write default recipients asset =app/src/main/assets/recipients.json=*
+
+#+begin_src json
+{
+  "recipients": [
+    { "id": "casper",  "label": "Casper",  "emoji": "🎮" },
+    { "id": "family",  "label": "Family",  "emoji": "🏠" },
+    { "id": "general", "label": "General", "emoji": "📝" }
+  ]
+}
+#+end_src
+
+- [ ] *Step 11: Write =ui/theme/Color.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+val Indigo80 = Color(0xFFB4C5FF)
+val IndigoGrey80 = Color(0xFFC3C5DD)
+val Peach80 = Color(0xFFFFB4A8)
+
+val Indigo40 = Color(0xFF445E91)
+val IndigoGrey40 = Color(0xFF5B5D72)
+val Peach40 = Color(0xFF904A42)
+#+end_src
+
+- [ ] *Step 12: Write =ui/theme/Type.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+val Typography = Typography(
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
+        letterSpacing = 0.5.sp
+    )
+)
+#+end_src
+
+- [ ] *Step 13: Write =ui/theme/Theme.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui.theme
+
+import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
+
+private val DarkColors = darkColorScheme(
+    primary = Indigo80, secondary = IndigoGrey80, tertiary = Peach80
+)
+private val LightColors = lightColorScheme(
+    primary = Indigo40, secondary = IndigoGrey40, tertiary = Peach40
+)
+
+@Composable
+fun StoritadTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    val scheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            val ctx = LocalContext.current
+            if (darkTheme) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+        }
+        darkTheme -> DarkColors
+        else -> LightColors
+    }
+    MaterialTheme(colorScheme = scheme, typography = Typography, content = content)
+}
+#+end_src
+
+- [ ] *Step 14: Write a stub =MainActivity.kt= to keep the build green*
+
+#+begin_src kotlin
+package uk.storitad.capture
+
+import android.app.Activity
+
+class MainActivity : Activity()
+#+end_src
+
+- [ ] *Step 15: Build*
+
+Run: =nix develop --command ./gradlew :app:assembleDebug=
+Expected: BUILD SUCCESSFUL.
+
+- [ ] *Step 16: Commit*
+
+#+begin_src bash
+git add app/
+git commit -m "feat: app module manifest, theme, resources, stub activity"
+#+end_src
+
+** Task 3: =EntryMetadata= data class + serialization test
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/metadata/EntryMetadata.kt=
+- Create: =app/src/test/java/uk/storitad/capture/metadata/EntryMetadataTest.kt=
+
+*** Note on =duration=
+
+The spec shows ISO-8601 =PT2M34S=. =kotlin.time.Duration= is not natively
+=@Serializable= in a stable way across =kotlinx-serialization= versions;
+Phase 1 stores raw seconds as =Long= (=durationSeconds=) and exposes a
+=duration= property. Ingest reads =durationSeconds= directly. If strict
+=PT...= format is required, add a custom serializer in a later phase.
+
+*** Steps
+
+- [ ] *Step 1: Write the failing test =EntryMetadataTest.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.metadata
+
+import kotlinx.datetime.Instant
+import kotlinx.serialization.json.Json
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class EntryMetadataTest {
+    private val json = Json { prettyPrint = false; encodeDefaults = true }
+
+    @Test fun `round trips through JSON preserving all fields`() {
+        val original = EntryMetadata(
+            id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            capturedAt = Instant.parse("2026-04-14T15:32:00Z"),
+            durationSeconds = 154L,
+            timezone = "Europe/London",
+            mediaFile = "20260414-153200-voice.m4a",
+            mediaType = MediaType.VOICE,
+            mimeType = "audio/mp4",
+            subject = "Picking Casper up from school",
+            recipients = listOf("casper"),
+            mood = "happy",
+            tags = listOf("school", "daily"),
+            notes = "He beat the level",
+            device = "Pixel 9 Pro",
+            appVersion = "0.1.0"
+        )
+        val encoded = json.encodeToString(EntryMetadata.serializer(), original)
+        val decoded = json.decodeFromString(EntryMetadata.serializer(), encoded)
+        assertEquals(original, decoded)
+    }
+
+    @Test fun `defaults apply when optional fields absent`() {
+        val raw = """
+            {"id":"x","version":1,"capturedAt":"2026-04-14T15:32:00Z",
+             "durationSeconds":10,"timezone":"UTC","mediaFile":"x.m4a",
+             "mediaType":"VOICE","mimeType":"audio/mp4","subject":"s",
+             "device":"d","appVersion":"v"}
+        """.trimIndent()
+        val decoded = json.decodeFromString(EntryMetadata.serializer(), raw)
+        assertEquals(listOf("family"), decoded.recipients)
+        assertEquals(emptyList<String>(), decoded.tags)
+        assertEquals(false, decoded.processed)
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Run test and verify it fails*
+
+Run: =nix develop --command ./gradlew :app:testDebugUnitTest --tests "uk.storitad.capture.metadata.EntryMetadataTest"=
+Expected: FAIL — =EntryMetadata= unresolved.
+
+- [ ] *Step 3: Write =EntryMetadata.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.metadata
+
+import kotlinx.datetime.Instant
+import kotlinx.serialization.Serializable
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+
+enum class MediaType { VOICE, VIDEO }
+
+@Serializable
+data class EntryMetadata(
+    val id: String,
+    val version: Int = 1,
+    val capturedAt: Instant,
+    val durationSeconds: Long,
+    val timezone: String,
+    val mediaFile: String,
+    val mediaType: MediaType,
+    val mimeType: String,
+    val subject: String,
+    val recipients: List<String> = listOf("family"),
+    val mood: String? = null,
+    val tags: List<String> = emptyList(),
+    val notes: String? = null,
+    val device: String,
+    val appVersion: String,
+    val transcriptDraft: String? = null,
+    val transcriptModel: String? = null,
+    val processed: Boolean = false
+) {
+    val duration: Duration get() = durationSeconds.seconds
+}
+#+end_src
+
+- [ ] *Step 4: Run test and verify it passes*
+
+Run: =nix develop --command ./gradlew :app:testDebugUnitTest --tests "uk.storitad.capture.metadata.EntryMetadataTest"=
+Expected: PASS.
+
+- [ ] *Step 5: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/metadata/EntryMetadata.kt \
+        app/src/test/java/uk/storitad/capture/metadata/EntryMetadataTest.kt
+git commit -m "feat(metadata): EntryMetadata data class with serialization"
+#+end_src
+
+** Task 4: =FileManager= — filename generation
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/storage/FileManager.kt=
+- Create: =app/src/test/java/uk/storitad/capture/storage/FileManagerTest.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write the failing test*
+
+#+begin_src kotlin
+package uk.storitad.capture.storage
+
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class FileManagerTest {
+    @Test fun `basename formats timestamp in local zone`() {
+        val at = Instant.parse("2026-04-14T15:32:00Z")
+        val zone = TimeZone.of("Europe/London")
+        assertEquals("20260414-163200-voice", FileManager.basename(at, zone, "voice"))
+    }
+
+    @Test fun `media and sidecar filenames share basename`() {
+        val at = Instant.parse("2026-04-14T15:32:00Z")
+        val zone = TimeZone.UTC
+        val basename = FileManager.basename(at, zone, "voice")
+        assertEquals("$basename.m4a", FileManager.mediaFilename(basename, "m4a"))
+        assertEquals("$basename.json", FileManager.sidecarFilename(basename))
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Run test and verify it fails*
+
+Run: =nix develop --command ./gradlew :app:testDebugUnitTest --tests "uk.storitad.capture.storage.FileManagerTest"=
+Expected: FAIL.
+
+- [ ] *Step 3: Write =FileManager.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.storage
+
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+
+object FileManager {
+    fun basename(at: Instant, zone: TimeZone, kind: String): String {
+        val ldt = at.toLocalDateTime(zone)
+        val date = "%04d%02d%02d".format(ldt.year, ldt.monthNumber, ldt.dayOfMonth)
+        val time = "%02d%02d%02d".format(ldt.hour, ldt.minute, ldt.second)
+        return "$date-$time-$kind"
+    }
+
+    fun mediaFilename(basename: String, ext: String) = "$basename.$ext"
+    fun sidecarFilename(basename: String) = "$basename.json"
+
+    const val INBOX_RELATIVE_PATH = "Documents/Storitad/inbox"
+}
+#+end_src
+
+- [ ] *Step 4: Run test and verify it passes*
+
+Run: =nix develop --command ./gradlew :app:testDebugUnitTest --tests "uk.storitad.capture.storage.FileManagerTest"=
+Expected: PASS.
+
+- [ ] *Step 5: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/storage/FileManager.kt \
+        app/src/test/java/uk/storitad/capture/storage/FileManagerTest.kt
+git commit -m "feat(storage): FileManager basename and filename helpers"
+#+end_src
+
+** Task 5: =MetadataRepository= — read/write sidecars
+
+The repository does pure filesystem IO against a directory, so it can be
+unit-tested against a =TemporaryFolder= and used from Android via the inbox
+dir resolver in Task 7.
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/metadata/MetadataRepository.kt=
+- Create: =app/src/test/java/uk/storitad/capture/metadata/MetadataRepositoryTest.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write the failing test*
+
+#+begin_src kotlin
+package uk.storitad.capture.metadata
+
+import kotlinx.datetime.Instant
+import org.junit.Assert.assertEquals
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+
+class MetadataRepositoryTest {
+    @get:Rule val tmp = TemporaryFolder()
+
+    private fun sample(basename: String) = EntryMetadata(
+        id = basename, capturedAt = Instant.parse("2026-04-14T15:32:00Z"),
+        durationSeconds = 10, timezone = "UTC",
+        mediaFile = "$basename.m4a", mediaType = MediaType.VOICE, mimeType = "audio/mp4",
+        subject = "s", device = "d", appVersion = "v"
+    )
+
+    @Test fun `write then read round trips`() {
+        val repo = MetadataRepository(tmp.root)
+        val meta = sample("20260414-153200-voice")
+        repo.write(meta)
+        val read = repo.read("20260414-153200-voice")
+        assertEquals(meta, read)
+    }
+
+    @Test fun `list returns all entries sorted newest first`() {
+        val repo = MetadataRepository(tmp.root)
+        repo.write(sample("20260413-100000-voice")
+            .copy(capturedAt = Instant.parse("2026-04-13T10:00:00Z")))
+        repo.write(sample("20260414-153200-voice"))
+        val all = repo.list()
+        assertEquals(
+            listOf("20260414-153200-voice", "20260413-100000-voice"),
+            all.map { it.id }
+        )
+    }
+
+    @Test fun `list ignores non-json files`() {
+        val repo = MetadataRepository(tmp.root)
+        tmp.newFile("stray.m4a")
+        repo.write(sample("20260414-153200-voice"))
+        assertEquals(1, repo.list().size)
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Run test and verify it fails*
+
+Run: =nix develop --command ./gradlew :app:testDebugUnitTest --tests "uk.storitad.capture.metadata.MetadataRepositoryTest"=
+Expected: FAIL.
+
+- [ ] *Step 3: Write =MetadataRepository.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.metadata
+
+import kotlinx.serialization.json.Json
+import java.io.File
+
+class MetadataRepository(private val inboxDir: File) {
+
+    private val json = Json {
+        prettyPrint = true
+        encodeDefaults = true
+        ignoreUnknownKeys = true
+    }
+
+    init { inboxDir.mkdirs() }
+
+    fun write(entry: EntryMetadata) {
+        val basename = entry.mediaFile.substringBeforeLast('.')
+        val file = File(inboxDir, "$basename.json")
+        file.writeText(json.encodeToString(EntryMetadata.serializer(), entry))
+    }
+
+    fun read(basename: String): EntryMetadata {
+        val file = File(inboxDir, "$basename.json")
+        return json.decodeFromString(EntryMetadata.serializer(), file.readText())
+    }
+
+    fun list(): List<EntryMetadata> =
+        inboxDir.listFiles { f -> f.isFile && f.name.endsWith(".json") }
+            ?.mapNotNull {
+                runCatching {
+                    json.decodeFromString(EntryMetadata.serializer(), it.readText())
+                }.getOrNull()
+            }
+            ?.sortedByDescending { it.capturedAt }
+            ?: emptyList()
+
+    fun mediaFile(entry: EntryMetadata): File = File(inboxDir, entry.mediaFile)
+
+    fun delete(entry: EntryMetadata) {
+        val basename = entry.mediaFile.substringBeforeLast('.')
+        File(inboxDir, "$basename.json").delete()
+        File(inboxDir, entry.mediaFile).delete()
+    }
+}
+#+end_src
+
+- [ ] *Step 4: Run test and verify it passes*
+
+Run: =nix develop --command ./gradlew :app:testDebugUnitTest --tests "uk.storitad.capture.metadata.MetadataRepositoryTest"=
+Expected: PASS.
+
+- [ ] *Step 5: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/metadata/MetadataRepository.kt \
+        app/src/test/java/uk/storitad/capture/metadata/MetadataRepositoryTest.kt
+git commit -m "feat(metadata): MetadataRepository with file-based IO"
+#+end_src
+
+** Task 6: =AudioRecorder=, =AudioPlayer=, =CaptureState=
+
+Device-dependent — no unit test. Wire up, build, manual-verify in Task 16.
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/capture/CaptureState.kt=
+- Create: =app/src/main/java/uk/storitad/capture/capture/AudioRecorder.kt=
+- Create: =app/src/main/java/uk/storitad/capture/capture/AudioPlayer.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =CaptureState.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.capture
+
+sealed interface CaptureState {
+    data object Idle : CaptureState
+    data class Recording(val startedAtMs: Long) : CaptureState
+    data class Stopped(val outputPath: String, val durationMs: Long) : CaptureState
+    data class Failed(val message: String) : CaptureState
+}
+#+end_src
+
+- [ ] *Step 2: Write =AudioRecorder.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.capture
+
+import android.content.Context
+import android.media.MediaRecorder
+import android.os.Build
+import java.io.File
+
+class AudioRecorder(private val context: Context) {
+    private var recorder: MediaRecorder? = null
+    private var outputFile: File? = null
+    private var startedAtMs: Long = 0
+
+    fun start(targetFile: File) {
+        require(recorder == null) { "recorder already running" }
+        outputFile = targetFile
+        val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(context)
+        } else {
+            @Suppress("DEPRECATION") MediaRecorder()
+        }
+        r.setAudioSource(MediaRecorder.AudioSource.MIC)
+        r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+        r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+        r.setAudioChannels(1)
+        r.setAudioSamplingRate(44100)
+        r.setAudioEncodingBitRate(128_000)
+        r.setOutputFile(targetFile.absolutePath)
+        r.prepare()
+        r.start()
+        startedAtMs = System.currentTimeMillis()
+        recorder = r
+    }
+
+    fun stop(): Long {
+        val r = recorder ?: error("recorder not running")
+        return try {
+            r.stop()
+            System.currentTimeMillis() - startedAtMs
+        } finally {
+            r.release()
+            recorder = null
+        }
+    }
+
+    fun cancel() {
+        val r = recorder ?: return
+        runCatching { r.stop() }
+        r.release()
+        recorder = null
+        outputFile?.delete()
+        outputFile = null
+    }
+}
+#+end_src
+
+- [ ] *Step 3: Write =AudioPlayer.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.capture
+
+import android.media.MediaPlayer
+import java.io.File
+
+class AudioPlayer {
+    private var player: MediaPlayer? = null
+
+    fun play(file: File, onCompletion: () -> Unit) {
+        stop()
+        player = MediaPlayer().apply {
+            setDataSource(file.absolutePath)
+            setOnCompletionListener { onCompletion() }
+            prepare()
+            start()
+        }
+    }
+
+    fun stop() {
+        player?.let {
+            runCatching { if (it.isPlaying) it.stop() }
+            it.release()
+        }
+        player = null
+    }
+}
+#+end_src
+
+- [ ] *Step 4: Build*
+
+Run: =nix develop --command ./gradlew :app:assembleDebug=
+Expected: BUILD SUCCESSFUL.
+
+- [ ] *Step 5: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/capture/
+git commit -m "feat(capture): AudioRecorder, AudioPlayer, CaptureState"
+#+end_src
+
+** Task 7: Inbox directory resolver
+
+Phase 1 writes into the app-scoped external files dir at
+=/storage/emulated/0/Android/data/uk.storitad.capture/files/Documents/Storitad/inbox/=.
+This is visible over MTP without =MANAGE_EXTERNAL_STORAGE=. Phase 4 will
+migrate to the public =Documents/Storitad/inbox/= collection via =MediaStore=;
+that change is invisible to =MetadataRepository= because it takes a =File=.
+
+*** Files
+- Modify: =app/src/main/java/uk/storitad/capture/storage/FileManager.kt=
+
+*** Steps
+
+- [ ] *Step 1: Extend =FileManager.kt=*
+
+Add this function inside =object FileManager= (above =INBOX_RELATIVE_PATH=):
+
+#+begin_src kotlin
+import android.content.Context
+import android.os.Environment
+import java.io.File
+
+// ... inside object FileManager:
+fun inboxDir(context: Context): File {
+    val base = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        ?: error("external files dir unavailable")
+    return File(base, "Storitad/inbox").apply { mkdirs() }
+}
+#+end_src
+
+- [ ] *Step 2: Build*
+
+Run: =nix develop --command ./gradlew :app:assembleDebug=
+Expected: BUILD SUCCESSFUL.
+
+- [ ] *Step 3: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/storage/FileManager.kt
+git commit -m "feat(storage): resolve inbox dir under external files"
+#+end_src
+
+** Task 8: Navigation + =MainActivity=
+
+*** Files
+- Modify: =app/src/main/java/uk/storitad/capture/MainActivity.kt= (replace stub)
+- Create: =app/src/main/java/uk/storitad/capture/ui/Nav.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =Nav.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui
+
+sealed class Route(val path: String) {
+    data object Home : Route("home")
+    data object Recording : Route("recording")
+    data object Review : Route("review/{basename}") {
+        fun of(basename: String) = "review/$basename"
+    }
+    data object Metadata : Route("metadata/{basename}") {
+        fun of(basename: String) = "metadata/$basename"
+    }
+    data object History : Route("history")
+    data object Detail : Route("detail/{basename}") {
+        fun of(basename: String) = "detail/$basename"
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Replace =MainActivity.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.Composable
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import uk.storitad.capture.ui.*
+import uk.storitad.capture.ui.theme.StoritadTheme
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val quickVoice = intent?.action == "uk.storitad.capture.action.QUICK_VOICE"
+        setContent { StoritadTheme { App(startOnRecording = quickVoice) } }
+    }
+}
+
+@Composable
+fun App(startOnRecording: Boolean) {
+    val nav = rememberNavController()
+    val start = if (startOnRecording) Route.Recording.path else Route.Home.path
+    NavHost(navController = nav, startDestination = start) {
+        composable(Route.Home.path) {
+            HomeScreen(
+                onRecordVoice = { nav.navigate(Route.Recording.path) },
+                onHistory = { nav.navigate(Route.History.path) }
+            )
+        }
+        composable(Route.Recording.path) {
+            RecordingScreen(
+                onStopped = { basename ->
+                    nav.navigate(Route.Review.of(basename)) {
+                        popUpTo(Route.Home.path)
+                    }
+                },
+                onCancel = { nav.popBackStack() }
+            )
+        }
+        composable(
+            Route.Review.path,
+            arguments = listOf(navArgument("basename") { type = NavType.StringType })
+        ) { entry ->
+            val basename = entry.arguments!!.getString("basename")!!
+            ReviewScreen(
+                basename = basename,
+                onContinue = { nav.navigate(Route.Metadata.of(basename)) },
+                onRerecord = {
+                    nav.popBackStack(Route.Recording.path, inclusive = false)
+                }
+            )
+        }
+        composable(
+            Route.Metadata.path,
+            arguments = listOf(navArgument("basename") { type = NavType.StringType })
+        ) { entry ->
+            val basename = entry.arguments!!.getString("basename")!!
+            MetadataScreen(
+                basename = basename,
+                onSaved = { nav.popBackStack(Route.Home.path, inclusive = false) },
+                onDiscard = { nav.popBackStack(Route.Home.path, inclusive = false) }
+            )
+        }
+        composable(Route.History.path) {
+            HistoryScreen(
+                onOpen = { basename -> nav.navigate(Route.Detail.of(basename)) },
+                onBack = { nav.popBackStack() }
+            )
+        }
+        composable(
+            Route.Detail.path,
+            arguments = listOf(navArgument("basename") { type = NavType.StringType })
+        ) { entry ->
+            val basename = entry.arguments!!.getString("basename")!!
+            DetailScreen(basename = basename, onBack = { nav.popBackStack() })
+        }
+    }
+}
+#+end_src
+
+- [ ] *Step 3: Commit*
+
+Build will fail until screens exist — that's fine; screens land in Tasks 9–15.
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/MainActivity.kt \
+        app/src/main/java/uk/storitad/capture/ui/Nav.kt
+git commit -m "feat(ui): nav graph and main activity shell"
+#+end_src
+
+** Task 9: =HomeScreen=
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/ui/HomeScreen.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =HomeScreen.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeScreen(onRecordVoice: () -> Unit, onHistory: () -> Unit) {
+    Scaffold(topBar = { CenterAlignedTopAppBar(title = { Text("Storitad") }) }) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Button(
+                onClick = onRecordVoice,
+                modifier = Modifier.fillMaxWidth().height(96.dp)
+            ) {
+                Icon(Icons.Filled.Mic, contentDescription = null)
+                Spacer(Modifier.width(12.dp))
+                Text("Record Voice", style = MaterialTheme.typography.titleLarge)
+            }
+            OutlinedButton(
+                onClick = {},
+                enabled = false,
+                modifier = Modifier.fillMaxWidth().height(96.dp)
+            ) {
+                Icon(Icons.Filled.Videocam, contentDescription = null)
+                Spacer(Modifier.width(12.dp))
+                Text("Record Video (Phase 2)")
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onHistory) { Text("History") }
+        }
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/ui/HomeScreen.kt
+git commit -m "feat(ui): HomeScreen with voice/history actions"
+#+end_src
+
+** Task 10: =DraftHolder=
+
+In-memory singleton for the capture → review → metadata handoff without
+passing large blobs through nav args. Phase 4 can swap for a
+=SavedStateHandle=-backed ViewModel if process-death robustness is needed.
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/ui/drafts/DraftHolder.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =DraftHolder.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui.drafts
+
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import java.io.File
+
+object DraftHolder {
+    data class Draft(
+        val basename: String,
+        val capturedAt: Instant,
+        val timezone: TimeZone,
+        val mediaFile: File,
+        var durationMs: Long = 0
+    )
+
+    @Volatile private var current: Draft? = null
+
+    fun begin(basename: String, at: Instant, zone: TimeZone, mediaFile: File) {
+        current = Draft(basename, at, zone, mediaFile)
+    }
+
+    fun finalise(durationMs: Long) { current?.durationMs = durationMs }
+
+    fun get(): Draft? = current
+
+    fun clear() {
+        current?.mediaFile?.takeIf { it.exists() }?.delete()
+        current = null
+    }
+
+    fun consume() { current = null }
+}
+#+end_src
+
+- [ ] *Step 2: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/ui/drafts/DraftHolder.kt
+git commit -m "feat(ui): DraftHolder for in-memory capture draft"
+#+end_src
+
+** Task 11: =RecordingScreen=
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/ui/RecordingScreen.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =RecordingScreen.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui
+
+import android.Manifest
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+import kotlinx.coroutines.delay
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import uk.storitad.capture.capture.AudioRecorder
+import uk.storitad.capture.storage.FileManager
+import uk.storitad.capture.ui.drafts.DraftHolder
+
+@OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun RecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
+    val ctx = LocalContext.current
+    val permission = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
+
+    LaunchedEffect(Unit) {
+        if (!permission.status.isGranted) permission.launchPermissionRequest()
+    }
+
+    if (!permission.status.isGranted) {
+        PermissionNeeded(onCancel); return
+    }
+
+    var recorder by remember { mutableStateOf<AudioRecorder?>(null) }
+    var basename by remember { mutableStateOf<String?>(null) }
+    var startAt by remember { mutableStateOf(0L) }
+    var elapsed by remember { mutableStateOf(0L) }
+
+    LaunchedEffect(Unit) {
+        val zone = TimeZone.currentSystemDefault()
+        val now = Clock.System.now()
+        val base = FileManager.basename(now, zone, "voice")
+        val inbox = FileManager.inboxDir(ctx)
+        val mediaFile = java.io.File(inbox, FileManager.mediaFilename(base, "m4a"))
+        val r = AudioRecorder(ctx)
+        r.start(mediaFile)
+        recorder = r
+        basename = base
+        startAt = System.currentTimeMillis()
+        DraftHolder.begin(base, now, zone, mediaFile)
+    }
+
+    LaunchedEffect(startAt) {
+        while (recorder != null) {
+            elapsed = System.currentTimeMillis() - startAt
+            delay(200)
+        }
+    }
+
+    DisposableEffect(Unit) { onDispose { recorder?.cancel() } }
+
+    Scaffold(topBar = {
+        TopAppBar(title = { Text("Recording") }, navigationIcon = {
+            TextButton(onClick = {
+                recorder?.cancel(); recorder = null
+                DraftHolder.clear()
+                onCancel()
+            }) { Text("Cancel") }
+        })
+    }) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(formatElapsed(elapsed), style = MaterialTheme.typography.displayLarge)
+            Icon(Icons.Filled.FiberManualRecord, contentDescription = null, tint = Color.Red)
+            Spacer(Modifier.weight(1f))
+            Button(
+                onClick = {
+                    val r = recorder ?: return@Button
+                    val durationMs = r.stop()
+                    recorder = null
+                    val b = basename ?: return@Button
+                    DraftHolder.finalise(durationMs)
+                    onStopped(b)
+                },
+                modifier = Modifier.fillMaxWidth().height(72.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Icon(Icons.Filled.Stop, contentDescription = null)
+                Spacer(Modifier.width(12.dp))
+                Text("Stop")
+            }
+        }
+    }
+}
+
+private fun formatElapsed(ms: Long): String {
+    val totalSec = ms / 1000
+    val m = totalSec / 60
+    val s = totalSec % 60
+    return "%d:%02d".format(m, s)
+}
+
+@Composable
+private fun PermissionNeeded(onCancel: () -> Unit) {
+    Scaffold { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Microphone permission is required.")
+            Spacer(Modifier.height(16.dp))
+            TextButton(onClick = onCancel) { Text("Back") }
+        }
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/ui/RecordingScreen.kt
+git commit -m "feat(ui): RecordingScreen with mic permission and AudioRecorder"
+#+end_src
+
+** Task 12: =ReviewScreen=
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/ui/ReviewScreen.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =ReviewScreen.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import uk.storitad.capture.capture.AudioPlayer
+import uk.storitad.capture.ui.drafts.DraftHolder
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ReviewScreen(basename: String, onContinue: () -> Unit, onRerecord: () -> Unit) {
+    val draft = DraftHolder.get()
+    val player = remember { AudioPlayer() }
+    var playing by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) { onDispose { player.stop() } }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Review") }) }) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(basename, style = MaterialTheme.typography.titleMedium)
+            Text("${(draft?.durationMs ?: 0) / 1000}s")
+            Button(onClick = {
+                val f = draft?.mediaFile ?: return@Button
+                if (playing) { player.stop(); playing = false }
+                else { player.play(f) { playing = false }; playing = true }
+            }) {
+                Icon(
+                    if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                    contentDescription = null
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (playing) "Stop" else "Play")
+            }
+            Spacer(Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    onClick = { DraftHolder.clear(); onRerecord() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Re-record") }
+                Button(
+                    onClick = { player.stop(); onContinue() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Continue") }
+            }
+        }
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/ui/ReviewScreen.kt
+git commit -m "feat(ui): ReviewScreen with playback and re-record"
+#+end_src
+
+** Task 13: =MetadataScreen= + save
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/ui/MetadataScreen.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =MetadataScreen.kt=*
+
+Simple horizontally-scrolling =Row= used for chips for Phase 1 to keep deps
+lean; Phase 2 can swap to =FlowRow= from =androidx.compose.foundation.layout=
+once many tags/moods are common.
+
+#+begin_src kotlin
+package uk.storitad.capture.ui
+
+import android.os.Build
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import uk.storitad.capture.BuildConfig
+import uk.storitad.capture.metadata.EntryMetadata
+import uk.storitad.capture.metadata.MediaType
+import uk.storitad.capture.metadata.MetadataRepository
+import uk.storitad.capture.storage.FileManager
+import uk.storitad.capture.ui.drafts.DraftHolder
+import java.util.UUID
+
+private val MOODS = listOf(
+    "happy" to "😊", "proud" to "💪", "reflective" to "🤔", "grateful" to "🙏",
+    "excited" to "🎉", "calm" to "😌", "nostalgic" to "💭", "loving" to "❤️",
+    "bittersweet" to "🥹", "hopeful" to "🌅"
+)
+
+private val DEFAULT_RECIPIENTS = listOf(
+    "casper" to "🎮", "family" to "🏠", "general" to "📝"
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MetadataScreen(basename: String, onSaved: () -> Unit, onDiscard: () -> Unit) {
+    val ctx = LocalContext.current
+    val draft = DraftHolder.get()
+
+    var subject by remember { mutableStateOf("") }
+    val recipients = remember { mutableStateListOf("family") }
+    var mood by remember { mutableStateOf<String?>(null) }
+    var tagsText by remember { mutableStateOf("") }
+    var notes by remember { mutableStateOf("") }
+    var confirmDiscard by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Details") },
+                navigationIcon = {
+                    TextButton(onClick = { confirmDiscard = true }) { Text("Discard") }
+                }
+            )
+        }
+    ) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = subject, onValueChange = { subject = it },
+                label = { Text("Subject *") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text("Recipients", style = MaterialTheme.typography.labelLarge)
+            Chips(DEFAULT_RECIPIENTS, recipients) { id ->
+                if (recipients.contains(id)) recipients.remove(id) else recipients.add(id)
+            }
+            Text("Mood", style = MaterialTheme.typography.labelLarge)
+            Chips(MOODS, mood?.let { listOf(it) } ?: emptyList()) { id ->
+                mood = if (mood == id) null else id
+            }
+            OutlinedTextField(
+                value = tagsText, onValueChange = { tagsText = it },
+                label = { Text("Tags (comma-separated)") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = notes, onValueChange = { notes = it },
+                label = { Text("Notes") },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp)
+            )
+            Button(
+                onClick = {
+                    if (draft == null || subject.isBlank()) return@Button
+                    val entry = EntryMetadata(
+                        id = UUID.randomUUID().toString(),
+                        capturedAt = draft.capturedAt,
+                        durationSeconds = draft.durationMs / 1000,
+                        timezone = draft.timezone.id,
+                        mediaFile = draft.mediaFile.name,
+                        mediaType = MediaType.VOICE,
+                        mimeType = "audio/mp4",
+                        subject = subject.trim(),
+                        recipients = recipients.toList(),
+                        mood = mood,
+                        tags = tagsText.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                        notes = notes.ifBlank { null },
+                        device = Build.MODEL,
+                        appVersion = BuildConfig.VERSION_NAME
+                    )
+                    MetadataRepository(FileManager.inboxDir(ctx)).write(entry)
+                    DraftHolder.consume()
+                    onSaved()
+                },
+                enabled = subject.isNotBlank(),
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) { Text("Save") }
+        }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDiscard = false
+                    DraftHolder.clear()
+                    onDiscard()
+                }) { Text("Discard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = false }) { Text("Keep") }
+            },
+            title = { Text("Discard recording?") },
+            text = { Text("This deletes the audio and cannot be undone.") }
+        )
+    }
+}
+
+@Composable
+private fun Chips(
+    options: List<Pair<String, String>>,
+    selected: List<String>,
+    onToggle: (String) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        options.forEach { (id, emoji) ->
+            FilterChip(
+                selected = selected.contains(id),
+                onClick = { onToggle(id) },
+                label = { Text("$emoji $id") }
+            )
+        }
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/ui/MetadataScreen.kt
+git commit -m "feat(ui): MetadataScreen writes sidecar on save"
+#+end_src
+
+** Task 14: =HistoryScreen=
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/ui/HistoryScreen.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =HistoryScreen.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import uk.storitad.capture.metadata.EntryMetadata
+import uk.storitad.capture.metadata.MediaType
+import uk.storitad.capture.metadata.MetadataRepository
+import uk.storitad.capture.storage.FileManager
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HistoryScreen(onOpen: (String) -> Unit, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    val entries by produceState(initialValue = emptyList<EntryMetadata>()) {
+        value = MetadataRepository(FileManager.inboxDir(ctx)).list()
+    }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("History") },
+                navigationIcon = { TextButton(onClick = onBack) { Text("Back") } }
+            )
+        }
+    ) { pad ->
+        if (entries.isEmpty()) {
+            Box(
+                Modifier.padding(pad).fillMaxSize(),
+                contentAlignment = androidx.compose.ui.Alignment.Center
+            ) { Text("No captures yet") }
+        } else {
+            LazyColumn(
+                Modifier.padding(pad).fillMaxSize(),
+                contentPadding = PaddingValues(8.dp)
+            ) {
+                items(entries, key = { it.id }) { entry ->
+                    EntryRow(entry) {
+                        onOpen(entry.mediaFile.substringBeforeLast('.'))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EntryRow(e: EntryMetadata, onClick: () -> Unit) {
+    val zone = runCatching { TimeZone.of(e.timezone) }
+        .getOrDefault(TimeZone.currentSystemDefault())
+    val ldt = e.capturedAt.toLocalDateTime(zone)
+    val icon = if (e.mediaType == MediaType.VOICE) "🎙️" else "🎥"
+    Card(Modifier.fillMaxWidth().padding(4.dp).clickable(onClick = onClick)) {
+        Column(Modifier.padding(12.dp)) {
+            Text("$icon ${e.subject}", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "%04d-%02d-%02d %02d:%02d · %dm %02ds".format(
+                    ldt.year, ldt.monthNumber, ldt.dayOfMonth,
+                    ldt.hour, ldt.minute,
+                    e.durationSeconds / 60, e.durationSeconds % 60
+                ),
+                style = MaterialTheme.typography.bodySmall
+            )
+            val footer = buildList {
+                e.recipients.firstOrNull()?.let { add(it) }
+                e.mood?.let { add(it) }
+            }.joinToString(" · ")
+            if (footer.isNotEmpty())
+                Text(footer, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/ui/HistoryScreen.kt
+git commit -m "feat(ui): HistoryScreen lists captures from sidecars"
+#+end_src
+
+** Task 15: =DetailScreen= (playback + metadata + delete)
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/ui/DetailScreen.kt=
+
+*** Steps
+
+- [ ] *Step 1: Write =DetailScreen.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.ui
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import uk.storitad.capture.capture.AudioPlayer
+import uk.storitad.capture.metadata.EntryMetadata
+import uk.storitad.capture.metadata.MetadataRepository
+import uk.storitad.capture.storage.FileManager
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DetailScreen(basename: String, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    val repo = remember { MetadataRepository(FileManager.inboxDir(ctx)) }
+    val entry by produceState<EntryMetadata?>(initialValue = null, basename) {
+        value = runCatching { repo.read(basename) }.getOrNull()
+    }
+    val player = remember { AudioPlayer() }
+    var playing by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) { onDispose { player.stop() } }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Entry") },
+                navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
+                actions = {
+                    IconButton(onClick = { confirmDelete = true }) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                    }
+                }
+            )
+        }
+    ) { pad ->
+        val e = entry
+        if (e == null) {
+            Box(
+                Modifier.padding(pad).fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) { CircularProgressIndicator() }
+            return@Scaffold
+        }
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(e.subject, style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "${e.durationSeconds}s · ${e.mediaType}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Button(onClick = {
+                if (playing) { player.stop(); playing = false }
+                else {
+                    player.play(repo.mediaFile(e)) { playing = false }
+                    playing = true
+                }
+            }) {
+                Icon(
+                    if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                    contentDescription = null
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (playing) "Stop" else "Play")
+            }
+            HorizontalDivider()
+            LabelValue("Recipients", e.recipients.joinToString(", "))
+            e.mood?.let { LabelValue("Mood", it) }
+            if (e.tags.isNotEmpty()) LabelValue("Tags", e.tags.joinToString(", "))
+            e.notes?.let { LabelValue("Notes", it) }
+            LabelValue("Captured", e.capturedAt.toString())
+            LabelValue("Device", e.device)
+        }
+    }
+
+    if (confirmDelete) {
+        val e = entry
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    e?.let { repo.delete(it); onBack() }
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            },
+            title = { Text("Delete entry?") },
+            text = { Text("Media and sidecar will be removed from the phone.") }
+        )
+    }
+}
+
+@Composable
+private fun LabelValue(label: String, value: String) {
+    Column {
+        Text(label, style = MaterialTheme.typography.labelSmall)
+        Text(value, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+#+end_src
+
+- [ ] *Step 2: Commit*
+
+#+begin_src bash
+git add app/src/main/java/uk/storitad/capture/ui/DetailScreen.kt
+git commit -m "feat(ui): DetailScreen with playback, metadata, delete"
+#+end_src
+
+** Task 16: End-to-end build + device smoke test
+
+- [ ] *Step 1: Full build*
+
+Run: =nix develop --command ./gradlew :app:assembleDebug=
+Expected: BUILD SUCCESSFUL.
+
+- [ ] *Step 2: Unit tests*
+
+Run: =nix develop --command ./gradlew :app:testDebugUnitTest=
+Expected: all tests PASS.
+
+- [ ] *Step 3: Install on device*
+
+Connect the Pixel 9 Pro with USB debugging enabled, then:
+
+Run: =nix develop --command ./gradlew :app:installDebug=
+Expected: success; app icon on launcher.
+
+- [ ] *Step 4: Manual smoke test checklist*
+
+Verify each flow and capture findings in the tag commit body:
+
+- Tap Record Voice → grant mic permission → record ~5s → Stop
+- Review screen shows duration; Play works
+- Continue → Metadata → enter subject "smoke test" → Save
+- Home → History → entry appears → tap → playback works, metadata matches
+- Long-press launcher icon → "Quick Voice" → starts recording directly
+- Confirm files under
+  =adb shell ls /sdcard/Android/data/uk.storitad.capture/files/Documents/Storitad/inbox/=
+- Sidecar JSON readable and matches entry
+
+- [ ] *Step 5: Tag the MVP*
+
+#+begin_src bash
+git tag -a v0.1.0-mvp -m "Phase 1 MVP: voice capture, metadata, history"
+#+end_src
+
+** Out of Scope for Phase 1 (tracked for Phase 2+)
+
+- Video recording (CameraX deps declared but unused)
+- Recording-in-progress foreground notification
+- Pause/resume during voice recording
+- Audio waveform visualisation
+- Configurable recipients UI (currently hardcoded defaults)
+- Whisper transcription
+- Publish to public =Documents/Storitad/inbox/= via =MediaStore=
+
+* Revisions — 2026-04-14 (iteration 1)
+
+** Changes
+
+*** Recipients
+
+Default recipients now reflect Bazza's actual family.
+
+| id      | label   | emoji | notes                |
+|---------+---------+-------+----------------------|
+| griffin | Griffin | 🎧    | eldest son, 21       |
+| julian  | Julian  | 🎲    | middle son, 13       |
+| casper  | Casper  | 🎮    | youngest son, 12     |
+| emma    | Emma    | 💛    | wife                 |
+| family  | Family  | 🏠    | all of the above     |
+| general | General | 📝    | non-directed journal |
+
+- Default selection on Metadata screen: =[family]= (unchanged).
+- =app/src/main/assets/recipients.json= replaces the Phase 1 default with the
+  six entries above.
+
+*** Geotagging / GPS
+
+New optional metadata block. Captured on stop (not continuously), used as a
+quiet contextual hint in the journal ingest step.
+
+Schema additions to =EntryMetadata=:
+
+#+begin_src kotlin
+@Serializable
+data class GeoFix(
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Float? = null,
+    val capturedAt: Instant
+)
+
+// Added to EntryMetadata:
+val location: GeoFix? = null,
+val locationName: String? = null   // Optional reverse-geocoded label,
+                                    // left null in Phase 1 (offline only)
+#+end_src
+
+Sidecar example addition:
+
+#+begin_src json
+"location": {
+  "latitude": 51.5074,
+  "longitude": -0.1278,
+  "accuracyMeters": 12.4,
+  "capturedAt": "2026-04-14T15:32:10Z"
+},
+"locationName": null
+#+end_src
+
+Permission change — =AndroidManifest.xml= gains:
+
+#+begin_src xml
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+#+end_src
+
+Behaviour:
+- Location is opt-in per recording via a toggle on the Metadata screen.
+- If the user has never granted location, the toggle is off and asks for
+  permission the first time it is flipped on.
+- We use =FusedLocationProviderClient= only if Play Services is present
+  (it isn't on GrapheneOS), otherwise fall back to
+  =LocationManager.getCurrentLocation(PROVIDER_FUSED, ...)= with a short
+  timeout (~3s). Never block the save.
+- No reverse geocoding on-device in Phase 1 — sixseven's ingest script can
+  do that asynchronously against a local GeoNames dataset.
+
+Supersedes the Phase 1 "Explicitly NOT requested: location" line in the
+Permissions section.
+
+*** Home screen — third primary action "Pending"
+
+A third card on the Home screen lists on-device recordings whose sidecar has
+=processed: false= (i.e. not yet pulled to sixseven). Tapping the card opens
+a list identical to History but:
+
+- Filtered to =processed == false=
+- Each row is editable (tap → Metadata screen pre-filled from the sidecar)
+- Includes a per-item "mark archived" action (move files to =archive/=)
+
+The existing History screen stays, but is demoted to a smaller text link at
+the bottom and shows *all* entries regardless of =processed= status.
+
+*** Metadata screen — location toggle
+
+New row above "Tags":
+
+| Field    | Type            | Required | Default |
+|----------+-----------------+----------+---------|
+| Location | Toggle + status | No       | off     |
+
+When on, the status text shows either "Fetching…", the accuracy
+("±12 m"), or "Unavailable" if the timeout fires. Saved =location= is
+written to the sidecar only if a fix was obtained before Save is tapped.
+
+** File impact summary
+
+- =app/src/main/AndroidManifest.xml= — add two location permissions
+- =app/src/main/assets/recipients.json= — six entries above
+- =app/src/main/java/uk/storitad/capture/metadata/EntryMetadata.kt= — add
+  =GeoFix=, =location=, =locationName=
+- =app/src/main/java/uk/storitad/capture/location/LocationProvider.kt=
+  (new) — thin wrapper over =LocationManager.getCurrentLocation=
+- =app/src/main/java/uk/storitad/capture/ui/MetadataScreen.kt= — location
+  toggle + status text; updated recipients chip set
+- =app/src/main/java/uk/storitad/capture/ui/HomeScreen.kt= — new
+  "Pending" card + demoted History link
+- =app/src/main/java/uk/storitad/capture/ui/PendingScreen.kt= (new) —
+  filtered list using =MetadataRepository.list().filter { !it.processed }=
+- =app/src/main/java/uk/storitad/capture/ui/Nav.kt= — new =Pending= route;
+  Metadata route gains an "edit existing" mode (=metadata/{basename}?edit=true=)
+- =storitad-spec.org= — this Revisions section
+
+** Sidecar format version bump
+
+The sidecar gets =version: 2= for any entry that includes =location= or
+=locationName=. The ingest script should treat =version: 1= and =version: 2=
+as backwards-compatible (ignore unknown fields in v1 entries).
+
+Appendix A changelog row:
+
+| Version | Date       | Changes                                        |
+|---------+------------+------------------------------------------------|
+|       2 | 2026-04-14 | Add =location= (GeoFix) and =locationName=     |
