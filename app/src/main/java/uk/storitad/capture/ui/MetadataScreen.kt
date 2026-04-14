@@ -79,9 +79,25 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
     fun fetchLocation() {
         locationStatus = "Fetching…"
         scope.launch {
-            val fix = locProvider.currentFix(3000)
-            locationFix = fix
-            locationStatus = fix?.accuracyMeters?.let { "±${it.toInt()} m" } ?: "Unavailable"
+            when (val outcome = locProvider.currentFix()) {
+                is LocationProvider.Outcome.Ok -> {
+                    locationFix = outcome.fix
+                    locationStatus = outcome.fix.accuracyMeters
+                        ?.let { "±${it.toInt()} m" } ?: "Fix acquired"
+                }
+                LocationProvider.Outcome.NoPermission -> {
+                    locationFix = null; locationStatus = "Permission denied"
+                }
+                LocationProvider.Outcome.LocationOff -> {
+                    locationFix = null; locationStatus = "Location services off"
+                }
+                LocationProvider.Outcome.NoProvider -> {
+                    locationFix = null; locationStatus = "No provider available"
+                }
+                LocationProvider.Outcome.Timeout -> {
+                    locationFix = null; locationStatus = "Timed out — try outdoors"
+                }
+            }
         }
     }
 
