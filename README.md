@@ -192,16 +192,25 @@ No build step is required to view it.
 
 ## Recipient aliases
 
-`ingest/aliases.example.yml` ships a couple of presets for the author's
-family. Edit `~/.config/storitad/aliases.yml` to match yours — the phone
-app reads from `app/src/main/assets/recipients.json` (rebuild + reinstall
-to change), and the ingest uses the YAML config for filtering in the site.
+The repo ships with generic placeholder recipients: `partner`, `child`,
+`family`, `friends`, `general`. Customise before your first real recording
+otherwise you'll have entries tagged `partner` rather than, say,
+`alice`:
 
-Recipients are currently stored verbatim — if you tag an entry `family` on
-the phone, the Markdown will say `recipients: [family]`, not a smeared
-list of every person. Alias-based navigation (e.g. show me all entries
-touching Casper, regardless of whether they were tagged `family` or
-`casper` specifically) is planned but not yet wired up in the site.
+- Phone app: edit `app/src/main/assets/recipients.json` — add one entry
+  per real person with an id, display label, and an emoji — then
+  `./gradlew :app:installDebug` to reinstall. You can also add recipients
+  at runtime through the gear icon on the Home screen (Settings →
+  Recipients).
+- Ingest: copy `ingest/aliases.example.yml` to
+  `~/.config/storitad/aliases.yml` and declare any group aliases you
+  want, e.g. `family: [alice, bob, charlie]`.
+
+Recipients are stored verbatim — if you tag an entry `family` on the
+phone, the Markdown reads `recipients: [family]`, not a smeared list of
+every person. Alias-based navigation (e.g. show me every entry touching
+Alice, regardless of whether it was tagged `family` or `alice`
+specifically) is planned but not yet wired up in the site.
 
 ## Manual install (without Nix)
 

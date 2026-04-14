@@ -1,7 +1,14 @@
 # Copy to ~/.config/storitad/aliases.yml to customise.
-# Each alias expands to a list of real recipient ids ingest-side; the entry
-# is tagged with both the alias AND the expanded ids.
+#
+# Each alias expands to a list of real recipient ids. Aliases are NOT
+# auto-expanded at ingest time — entries are tagged verbatim with whatever
+# you pick on the phone. The alias config is consumed by the rendered
+# site (planned) for filter-by-membership views.
+#
+# Edit these to reflect your own people. Delete the example block and add
+# your own — e.g. `family: [alice, bob, charlie]` with matching entries in
+# app/src/main/assets/recipients.json.
 
 aliases:
-  family: [griffin, julian, casper, emma]
-  boys:   [griffin, julian, casper]
+  # Example: a 'family' alias covering partner + child.
+  family: [partner, child]

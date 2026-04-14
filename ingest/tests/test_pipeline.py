@@ -119,14 +119,20 @@ def test_full_render(tmp_path: Path):
     assert "impossible level" in casper_rec["text"]
 
 
-def test_aliases_expand():
-    m = aliases.load_aliases(None)
-    out = aliases.expand(["family", "casper"], m)
+def test_aliases_expand(tmp_path: Path):
+    # Default ship-with map is empty; load from an explicit YAML.
+    yml = tmp_path / "aliases.yml"
+    yml.write_text("aliases:\n  family: [alice, bob]\n")
+    m = aliases.load_aliases(yml)
+    out = aliases.expand(["family", "carol"], m)
     assert out[0] == "family"
-    assert "casper" in out
-    assert "griffin" in out
+    assert "alice" in out and "bob" in out and "carol" in out
     # no duplicates
     assert len(out) == len(set(out))
+
+
+def test_aliases_empty_by_default():
+    assert aliases.load_aliases(None) == {}
 
 
 def test_sidecar_v1_without_location(tmp_path: Path):

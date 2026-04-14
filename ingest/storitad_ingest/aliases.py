@@ -7,7 +7,7 @@ import yaml
 
 
 DEFAULT_ALIASES: dict[str, list[str]] = {
-    "family": ["griffin", "julian", "casper", "emma"],
+    # Intentionally empty. Users declare their own in aliases.yml.
 }
 
 

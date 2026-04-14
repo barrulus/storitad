@@ -1,10 +1,9 @@
 {
   "recipients": [
-    { "id": "griffin", "label": "Griffin", "emoji": "🎧" },
-    { "id": "julian",  "label": "Julian",  "emoji": "🎲" },
-    { "id": "casper",  "label": "Casper",  "emoji": "🎮" },
-    { "id": "emma",    "label": "Emma",    "emoji": "💛" },
+    { "id": "partner", "label": "Partner", "emoji": "💛" },
+    { "id": "child",   "label": "Child",   "emoji": "🧒" },
     { "id": "family",  "label": "Family",  "emoji": "🏠" },
+    { "id": "friends", "label": "Friends", "emoji": "🤝" },
     { "id": "general", "label": "General", "emoji": "📝" }
   ]
 }

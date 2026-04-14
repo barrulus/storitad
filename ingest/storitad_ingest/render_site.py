@@ -12,12 +12,12 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 # Canonical recipient emoji map, mirrors app/src/main/assets/recipients.json.
+# Users override / extend via `recipient_emoji:` in config.yml.
 DEFAULT_RECIPIENT_EMOJI: dict[str, str] = {
-    "griffin": "🎧",
-    "julian": "🎲",
-    "casper": "🎮",
-    "emma": "💛",
+    "partner": "💛",
+    "child": "🧒",
     "family": "🏠",
+    "friends": "🤝",
     "general": "📝",
 }
 
