@@ -56,6 +56,45 @@ class ModelManager(private val ctx: Context) {
         target
     }
 
+    /** Sideload a .bin the user pre-downloaded outside the app. */
+    suspend fun importFromStream(
+        spec: ModelSpec,
+        open: () -> java.io.InputStream
+    ): File = withContext(Dispatchers.IO) {
+        val target = fileFor(spec)
+        val tmp = File(target.parentFile, "${target.name}.part")
+        runCatching { tmp.delete() }
+        _state.value = DownloadState.Downloading(0, spec.sizeBytes)
+        try {
+            open().use { input ->
+                tmp.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var read: Int
+                    var done = 0L
+                    while (input.read(buf).also { read = it } != -1) {
+                        out.write(buf, 0, read)
+                        done += read
+                        _state.value = DownloadState.Downloading(done, spec.sizeBytes)
+                    }
+                }
+            }
+            _state.value = DownloadState.Verifying
+            val actual = sha256(tmp)
+            if (!actual.equals(spec.sha256, ignoreCase = true)) {
+                tmp.delete()
+                _state.value = DownloadState.Failed("SHA-256 mismatch ($actual)")
+                error("SHA-256 mismatch")
+            }
+            tmp.renameTo(target)
+            _state.value = DownloadState.Ready
+        } catch (t: Throwable) {
+            runCatching { tmp.delete() }
+            _state.value = DownloadState.Failed(t.message ?: "import failed")
+            throw t
+        }
+        target
+    }
+
     private suspend fun download(spec: ModelSpec, target: File) = withContext(Dispatchers.IO) {
         val tmp = File(target.parentFile, "${target.name}.part")
         runCatching { tmp.delete() }

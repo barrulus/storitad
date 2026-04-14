@@ -1,5 +1,8 @@
 package uk.storitad.capture.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -148,6 +151,22 @@ fun DetailScreen(basename: String, onBack: () -> Unit, onEdit: (String) -> Unit)
         }
     }
 
+    val pickModel = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                modelManager.importFromStream(TINY_EN) {
+                    ctx.contentResolver.openInputStream(uri)!!
+                }
+            }.onSuccess {
+                showModelSheet = false
+                TranscribeWorker.enqueue(ctx, basename)
+            }
+        }
+    }
+
     if (showModelSheet) {
         ModelDownloadDialog(
             state = dl,
@@ -160,7 +179,8 @@ fun DetailScreen(basename: String, onBack: () -> Unit, onEdit: (String) -> Unit)
                             TranscribeWorker.enqueue(ctx, basename)
                         }
                 }
-            }
+            },
+            onSideload = { pickModel.launch(arrayOf("*/*")) }
         )
     }
 
@@ -236,7 +256,8 @@ private fun TranscriptPanel(
 private fun ModelDownloadDialog(
     state: DownloadState,
     onDismiss: () -> Unit,
-    onConfirm: () -> Unit
+    onConfirm: () -> Unit,
+    onSideload: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -244,6 +265,11 @@ private fun ModelDownloadDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("One-time download into app storage. No other network is used by Storitad.")
+                Text(
+                    "If network is blocked, tap \"Sideload\" and pick a pre-downloaded ggml-tiny.en.bin (SHA-256 is verified).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 when (val s = state) {
                     is DownloadState.Downloading -> {
                         val frac = if (s.total > 0) s.bytes.toFloat() / s.total else 0f
@@ -260,7 +286,10 @@ private fun ModelDownloadDialog(
         },
         confirmButton = {
             val enabled = state !is DownloadState.Downloading && state !is DownloadState.Verifying
-            TextButton(enabled = enabled, onClick = onConfirm) { Text("Download") }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(enabled = enabled, onClick = onSideload) { Text("Sideload") }
+                TextButton(enabled = enabled, onClick = onConfirm) { Text("Download") }
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
