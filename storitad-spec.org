@@ -3108,3 +3108,376 @@ Storitad Ingest (sixseven-side, not in this repo) is responsible for:
 - No UI distinction between "person" and "alias" in Phase 2. If that becomes
   useful later, add a =kind= field on =Recipient= (default =person=) and
   style accordingly — fully backwards compatible.
+
+* Phase 3 Implementation Plan
+
+#+begin_quote
+Phase 2 tag: =v0.2.0=. Target for Phase 3: =v0.3.0=.
+Chosen strategy: build =whisper.cpp= via the Android NDK (CMake + JNI) as a
+git submodule, ship a single =arm64-v8a= native library, transcribe
+on-demand (never automatically on Save), run in WorkManager.
+#+end_quote
+
+** Goal
+
+Give each captured entry a transcript draft, on-device only. No cloud, no
+Play Services. The user must explicitly tap "Transcribe" — we never warm up
+the CPU behind their back.
+
+** Architecture
+
+- =native/whisper.cpp/= — git submodule pinned to a known-good commit
+- =app/src/main/cpp/CMakeLists.txt= — pulls whisper.cpp, builds a thin JNI
+  shim =libstoritad-whisper.so=
+- =capture/whisper/WhisperNative.kt= — =external fun= bindings
+  (=loadModel=, =transcribe=, =release=)
+- =capture/whisper/Transcriber.kt= — Kotlin wrapper that owns the model
+  lifecycle (lazy load, explicit release)
+- =capture/whisper/ModelManager.kt= — handles downloading =ggml-tiny.en.bin=
+  from Hugging Face mirror into =filesDir/models/=, with a SHA-256 check.
+  Never downloads without user consent (first tap on Transcribe prompts).
+- =capture/whisper/TranscribeWorker.kt= — =CoroutineWorker= that reads the
+  sidecar, runs =Transcriber.transcribe(mediaFile)=, writes
+  =transcriptDraft= + =transcriptModel= back to the sidecar. One-shot,
+  unique work name per =basename= so duplicate taps coalesce.
+- =ui/DetailScreen.kt= — new Transcript section: "Transcribe" button when
+  none; loading spinner when WorkInfo is RUNNING; transcript text (editable,
+  with Save) when present.
+
+Single ABI: =arm64-v8a=. Pixel 9 Pro is arm64 only; building x86/armv7
+wastes APK size and is irrelevant to this project.
+
+** Dependencies
+
+Add to version catalog:
+
+- =work-runtime-ktx= (=androidx.work:work-runtime-ktx:2.9.1=)
+- =lifecycle-runtime-compose= is already in use for WorkInfo observation.
+
+** Task 1: Pin whisper.cpp as a submodule, wire CMake
+
+*** Files
+- Create: =native/= (directory)
+- Create: =app/src/main/cpp/CMakeLists.txt=
+- Create: =app/src/main/cpp/storitad_whisper.cpp= (JNI shim)
+- Modify: =app/build.gradle.kts= — add =externalNativeBuild= block
+- Modify: =.gitmodules= — register submodule
+
+*** Steps
+
+- [ ] *Step 1: Add submodule*
+
+#+begin_src bash
+git submodule add https://github.com/ggerganov/whisper.cpp native/whisper.cpp
+cd native/whisper.cpp && git checkout v1.7.2 && cd ../..
+git add .gitmodules native/whisper.cpp
+#+end_src
+
+Pin to a tagged release so reproducibility holds. =v1.7.2= (late-2024) is a
+good starting point — re-pin when upstream tags something newer.
+
+- [ ] *Step 2: =CMakeLists.txt=*
+
+#+begin_src cmake
+cmake_minimum_required(VERSION 3.22)
+project(storitad-whisper)
+
+set(CMAKE_CXX_STANDARD 17)
+set(WHISPER_ROOT ${CMAKE_SOURCE_DIR}/../../../../native/whisper.cpp)
+
+# Disable things we don't need
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(${WHISPER_ROOT} whisper-build)
+
+add_library(storitad-whisper SHARED storitad_whisper.cpp)
+target_link_libraries(storitad-whisper PRIVATE whisper log)
+target_compile_options(storitad-whisper PRIVATE -fexceptions -frtti)
+#+end_src
+
+- [ ] *Step 3: JNI shim =storitad_whisper.cpp=*
+
+Three entry points:
+
+#+begin_src cpp
+#include <jni.h>
+#include <android/log.h>
+#include <string>
+#include "whisper.h"
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_uk_storitad_capture_whisper_WhisperNative_nativeLoadModel(
+    JNIEnv* env, jclass, jstring modelPath) {
+  const char* path = env->GetStringUTFChars(modelPath, nullptr);
+  whisper_context_params cparams = whisper_context_default_params();
+  auto* ctx = whisper_init_from_file_with_params(path, cparams);
+  env->ReleaseStringUTFChars(modelPath, path);
+  return reinterpret_cast<jlong>(ctx);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_uk_storitad_capture_whisper_WhisperNative_nativeTranscribe(
+    JNIEnv* env, jclass, jlong ctxHandle,
+    jfloatArray pcm, jint sampleRate) {
+  auto* ctx = reinterpret_cast<whisper_context*>(ctxHandle);
+  jsize n = env->GetArrayLength(pcm);
+  jfloat* samples = env->GetFloatArrayElements(pcm, nullptr);
+
+  whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+  params.language = "en";
+  params.n_threads = 4;
+  params.print_progress = false;
+  params.print_special = false;
+  params.translate = false;
+
+  whisper_full(ctx, params, samples, n);
+  env->ReleaseFloatArrayElements(pcm, samples, JNI_ABORT);
+
+  std::string out;
+  int segs = whisper_full_n_segments(ctx);
+  for (int i = 0; i < segs; ++i) {
+    out += whisper_full_get_segment_text(ctx, i);
+  }
+  return env->NewStringUTF(out.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_uk_storitad_capture_whisper_WhisperNative_nativeRelease(
+    JNIEnv*, jclass, jlong ctxHandle) {
+  whisper_free(reinterpret_cast<whisper_context*>(ctxHandle));
+}
+#+end_src
+
+- [ ] *Step 4: =app/build.gradle.kts=*
+
+Inside =android { }=:
+
+#+begin_src kotlin
+externalNativeBuild {
+    cmake {
+        path = file("src/main/cpp/CMakeLists.txt")
+        version = "3.22.1"
+    }
+}
+defaultConfig {
+    // existing fields ...
+    ndk { abiFilters += "arm64-v8a" }
+}
+#+end_src
+
+- [ ] *Step 5: Update =flake.nix=*
+
+Add to the SDK set:
+
+#+begin_src nix
+ndk-26-3-11579264  # check current android-nixpkgs attribute name
+#+end_src
+
+Set =ANDROID_NDK_ROOT= env var in =mkShell=.
+
+- [ ] *Step 6: Build*
+
+=./gradlew :app:assembleDebug= → expect =libstoritad-whisper.so= inside
+=app/build/intermediates/merged_native_libs/debug/out/lib/arm64-v8a/=.
+
+- [ ] *Step 7: Commit*
+
+=git commit -m "chore(native): vendor whisper.cpp as a submodule, build JNI shim"=
+
+** Task 2: =WhisperNative= + =Transcriber= Kotlin layer
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/whisper/WhisperNative.kt=
+- Create: =app/src/main/java/uk/storitad/capture/whisper/Transcriber.kt=
+
+*** Steps
+
+- [ ] *Step 1: =WhisperNative.kt=*
+
+#+begin_src kotlin
+package uk.storitad.capture.whisper
+
+internal object WhisperNative {
+    init { System.loadLibrary("storitad-whisper") }
+    @JvmStatic external fun nativeLoadModel(modelPath: String): Long
+    @JvmStatic external fun nativeTranscribe(ctx: Long, pcm: FloatArray, sampleRate: Int): String
+    @JvmStatic external fun nativeRelease(ctx: Long)
+}
+#+end_src
+
+- [ ] *Step 2: =Transcriber.kt=*
+
+Handles:
+- decoding the m4a/mp4 to 16 kHz mono PCM via =MediaExtractor= + =MediaCodec=
+  (resample with a simple linear interpolator — good enough for Whisper)
+- calling =WhisperNative.nativeTranscribe=
+- releasing the context when done (no caching between calls; cheaper than
+  holding 75 MB forever)
+
+Skeleton:
+
+#+begin_src kotlin
+class Transcriber(private val modelPath: String) {
+    suspend fun transcribe(mediaFile: File): String = withContext(Dispatchers.Default) {
+        val pcm = AudioDecoder.toMono16k(mediaFile)
+        val ctx = WhisperNative.nativeLoadModel(modelPath)
+        try {
+            WhisperNative.nativeTranscribe(ctx, pcm, 16_000).trim()
+        } finally {
+            WhisperNative.nativeRelease(ctx)
+        }
+    }
+}
+
+object AudioDecoder {
+    fun toMono16k(file: File): FloatArray { /* MediaExtractor + MediaCodec */ }
+}
+#+end_src
+
+- [ ] *Step 3: Short decoder-only smoke test*
+
+A Kotlin test that runs =AudioDecoder= against a tiny fixture file bundled
+under =app/src/test/resources/=. No whisper call in the test (the native
+side needs a device).
+
+- [ ] *Step 4: Commit*
+
+=git commit -m "feat(whisper): Kotlin bindings + audio-to-PCM16k decoder"=
+
+** Task 3: =ModelManager=
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/whisper/ModelManager.kt=
+
+*** Steps
+
+- [ ] *Step 1: Model catalogue*
+
+Hardcode one model for Phase 3:
+
+#+begin_src kotlin
+data class ModelSpec(
+    val id: String,           // "tiny.en"
+    val filename: String,     // "ggml-tiny.en.bin"
+    val url: String,          // hf mirror
+    val sha256: String,       // checked after download
+    val sizeBytes: Long       // for UX
+)
+
+val TINY_EN = ModelSpec(
+    id = "tiny.en",
+    filename = "ggml-tiny.en.bin",
+    url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+    sha256 = "<paste from upstream release>",
+    sizeBytes = 77_692_928
+)
+#+end_src
+
+- [ ] *Step 2: Download + verify*
+
+=download()= streams via =OkHttp= or =java.net.HttpURLConnection= (no new
+dep needed — stdlib works). Writes to =filesDir/models/<filename>.part=
+then renames. On completion, sha256 verifies; on mismatch, delete and
+throw. Exposes progress via =StateFlow<DownloadState>=.
+
+Note: this is the first outbound network in the project. Declare
+=INTERNET= in the manifest with a comment explaining it's model-download
+only, user-triggered. Still no network permission for anything else.
+
+- [ ] *Step 3: Commit*
+
+=git commit -m "feat(whisper): model download with sha256 verification"=
+
+** Task 4: =TranscribeWorker=
+
+*** Files
+- Create: =app/src/main/java/uk/storitad/capture/whisper/TranscribeWorker.kt=
+- Modify: version catalog — add =work-runtime-ktx=
+- Modify: =app/build.gradle.kts= — =implementation(libs.work.runtime.ktx)=
+
+*** Steps
+
+- [ ] *Step 1: =CoroutineWorker= implementation*
+
+Inputs: =basename= string. Reads the sidecar, resolves media file, runs
+=Transcriber.transcribe=, writes the sidecar back with
+=transcriptDraft= + =transcriptModel = "whisper-tiny.en"=.
+
+Unique work name: =transcribe/{basename}= with
+=ExistingWorkPolicy.KEEP= so a second tap coalesces with the first.
+
+- [ ] *Step 2: Foreground-service notification for long runs*
+
+Use =setForeground(ForegroundInfo(...))= with the existing
+=RecordingService= channel so transcription has a visible ongoing
+notification if the user backgrounds. Short enough runs (tiny.en + a
+30 s clip) may complete before the notification even shows.
+
+- [ ] *Step 3: Commit*
+
+=git commit -m "feat(whisper): TranscribeWorker coalescing job"=
+
+** Task 5: Detail screen — transcript panel
+
+*** Files
+- Modify: =app/src/main/java/uk/storitad/capture/ui/DetailScreen.kt=
+
+*** Steps
+
+- [ ] *Step 1: States*
+
+Three UI states:
+1. *no transcript + no model* → show "Transcribe" button that opens a
+   first-time model download sheet (=ggml-tiny.en.bin, ~75 MB, one-time=).
+2. *no transcript + model present* → single "Transcribe" button.
+3. *transcript present* → show =OutlinedTextField= with the text, "Save
+   edits" button. Also "Re-transcribe" as a less prominent option.
+
+Observe =WorkManager.getWorkInfosForUniqueWorkFlow(...)= to show progress.
+
+- [ ] *Step 2: Wiring*
+
+Button onClick → =ModelManager.ensureModel()= → =WorkManager.enqueueUniqueWork=
+=transcribe/{basename}= with input data. Re-load entry when worker reports
+=SUCCEEDED=.
+
+- [ ] *Step 3: Commit*
+
+=git commit -m "feat(ui): transcript panel on DetailScreen"=
+
+** Task 6: End-to-end + tag
+
+- [ ] *Step 1: Device smoke*
+
+- Record a 30 s clip.
+- Tap Transcribe → accept model download → wait → verify transcript appears.
+- Edit a word, Save edits → reopen → confirm persisted.
+- Repeat on a video entry (audio track should transcribe identically).
+
+- [ ] *Step 2: Performance note*
+
+Record actual wall-clock time for a 30 s clip on tiny.en on Pixel 9 Pro in
+the commit body. If >3× realtime, consider bumping thread count to 6 and
+re-measuring. Worst-case acceptable for Phase 3 is 1× realtime on tiny.en.
+
+- [ ] *Step 3: Tag*
+
+=git tag -a v0.3.0 -m "Phase 3: on-device Whisper transcription (tiny.en, on-demand)"=
+
+** Sidecar format note
+
+No schema change. =transcriptDraft= and =transcriptModel= already exist
+(they were added in Phase 1 but always null). Ingest-side (Storitad
+Ingest) should prefer an existing =transcriptDraft= over re-running
+whisper.cpp on the laptop.
+
+** Out of Scope (deferred)
+
+- Model choice beyond tiny.en (base.en / small.en — deferred to Phase 4+)
+- Translate mode (non-English source)
+- Language auto-detect
+- Timestamped segments / subtitle-style display
+- Diarisation
+- Reverse geocoding of =locationName= (still deferred)
