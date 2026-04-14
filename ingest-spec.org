@@ -27,6 +27,12 @@ same source data.
 - *No cloud, no database.* Filesystem is the store.
 - *One command.* =storitad-pull= does everything: pull from phone, ingest,
   render, open.
+- *Heavy lifting on sixseven, not the phone.* Transcription, video
+  thumbnailing, reverse geocoding, PDF export — everything CPU-hungry —
+  runs here, where there's a proper CPU, RAM, and power. The phone's
+  Whisper tiny.en on-demand button is a *fallback* for when sixseven is
+  unreachable. The authoritative transcript is produced by the ingest run
+  using a larger, better model.
 
 ** The Two Outputs
 
@@ -132,14 +138,68 @@ schema versions don't lose data.
 Sidecar versions 1 and 2 are both accepted (version 1 just lacks
 =location=, =locationName=, handled via =dict.get(...)=).
 
-** Step 3: Fill transcript if absent
+** Step 3: Transcribe (authoritative, sixseven-side)
 
-If =transcriptDraft= is null or empty, run =whisper.cpp= (CLI binary, not
-Python bindings) on the media file and capture stdout. Record the model
-used (=whisper-tiny.en= for now) in =transcriptModel=.
+Ingest *always* runs transcription for entries that don't already have a
+server-generated transcript. This is the main reason sixseven exists in the
+pipeline: give the phone a break and use a beefier Whisper model with more
+context than tiny.en could provide on-device.
 
-On sixseven, =whisper.cpp= is expected on =$PATH= or at a configurable
-binary path. The Nix flake can pin it; Phase 1 just errors if missing.
+*** Audio extraction
+
+=VOICE= entries: the =.m4a= goes straight to whisper.cpp (it handles AAC
+natively via ffmpeg).
+
+=VIDEO= entries: ffmpeg demuxes the AAC audio track into a temporary
+=.wav= (16 kHz mono float) before feeding to whisper.cpp. The original
+=.mp4= is preserved unchanged.
+
+#+begin_src bash
+ffmpeg -i input.mp4 -vn -ac 1 -ar 16000 -f wav output.wav
+#+end_src
+
+*** Model choice
+
+Default: =ggml-small.en.bin= (~466 MB, roughly 2× realtime on modern CPUs,
+substantially better accuracy than tiny.en). Configurable via
+=whisper_model= in the config file. Heavier models (=medium.en=,
+=large-v3=) are supported — user choice.
+
+The ingest tool never uses the tiny.en phone model; it has its own copy
+of the bigger one.
+
+*** Precedence: phone draft vs server transcript
+
+When a sidecar arrives with a =transcriptDraft= already populated (the
+user tapped Transcribe on the phone):
+
+1. *If the user has edited it on the phone* — sidecar field
+   =transcriptModel= starts with =whisper-tiny.en= but the text differs
+   from what tiny.en would naturally produce — we can't always tell. Rule
+   of thumb: if =transcriptDraft= is non-empty AND
+   =transcriptModel = "whisper-tiny.en"= AND the ingest hasn't yet
+   produced a server transcript, keep the phone's version as a *fallback
+   field* (=phoneTranscript=) and generate the authoritative one anyway.
+2. *Authoritative field* is always called =transcript= in the markdown
+   frontmatter and stores the server-produced text with the server's
+   model name in =transcriptModel=. The phone's text is retained under
+   =phoneTranscript= so nothing is lost.
+3. *On re-run* (=--rerender= or re-ingest of a changed =.md=), the
+   =transcript= field is preserved; re-transcription requires explicit
+   =--retranscribe <id>=.
+
+This policy keeps the phone's Transcribe button useful in the field (the
+user can read back what they just said, or mark up edits as notes) while
+guaranteeing the archive benefits from the better server model.
+
+*** Error handling
+
+- whisper.cpp missing: hard error with a pointer to the Nix flake package.
+- Model file missing: hard error with a suggestion to run
+  =storitad-pull --fetch-model= (Phase 2) or download manually.
+- ffmpeg missing: hard error (for video entries only).
+- Transcription timeout (>10× realtime): soft error, record
+  =transcript: null= and move on. User can retry with =--retranscribe=.
 
 ** Step 4: Expand recipient aliases
 
@@ -186,7 +246,11 @@ location:
   accuracy_m: 12
 device: Pixel 9 Pro
 media: 20260414-153200-voice.m4a
-transcript_model: whisper-tiny.en
+transcript_model: whisper-small.en
+phone_transcript: |
+  Just picked Casper up from school. He was buzzing about beating some
+  impossible level in Geometry Dash.
+phone_transcript_model: whisper-tiny.en
 ---
 
 ## Transcript
@@ -322,19 +386,28 @@ The flake module exposes =ingest= as a =buildPythonApplication= so
 - [ ] Scaffold =ingest/= with =pyproject.toml=, =click= CLI skeleton
 - [ ] =pull.py= — adb transport only; skip mtp until user asks
 - [ ] =sidecar.py= — validate v1+v2, passthrough unknown fields
-- [ ] =render_markdown.py= — YAML frontmatter + body, plus media copy
+- [ ] =transcribe.py= — ffmpeg audio-extraction for video, whisper.cpp CLI
+      invocation, small.en model by default; preserves phone's draft as
+      =phoneTranscript= fallback
 - [ ] =aliases.py= — load YAML, expand on request
+- [ ] =render_markdown.py= — YAML frontmatter (including =phone_transcript=
+      when present) + body, plus media copy
 - [ ] =render_site.py= — Jinja2 templates, chronological index, per-entry
-      pages, search index, vanilla-JS search box
-- [ ] Round-trip test with a dozen hand-crafted sidecars
+      pages with audio/video player, search index (built over server
+      transcript — phone transcript is reference only), vanilla-JS search
+      box
+- [ ] Round-trip test with a dozen hand-crafted sidecars (voice + video,
+      with + without phone transcript)
 - [ ] =storitad-pull= end-to-end against the real phone, open in browser
 
 ** Phase 2 — Polish
 
-- [ ] =transcribe.py= — run whisper.cpp when =transcriptDraft= is absent
 - [ ] mtp transport via =jmtpfs=
-- [ ] Phone-side =processed=true= writeback
+- [ ] Phone-side =processed=true= writeback via adb push
 - [ ] Entry filter chips on the index page (recipient, mood, year)
+- [ ] =storitad-pull --fetch-model= helper that downloads
+      =ggml-small.en.bin= + SHA-256 verify into a configured models dir
+- [ ] =--retranscribe <id>= and =--retranscribe-all= flags
 - [ ] PDF export (=weasyprint= — one PDF per year; regenerate alongside HTML)
 
 ** Phase 3 — Nice to Have
@@ -344,6 +417,8 @@ The flake module exposes =ingest= as a =buildPythonApplication= so
 - [ ] Diff-based rebuild (only regenerate pages whose entries changed)
 - [ ] =--since=YYYY-MM-DD= flag on =storitad-pull=
 - [ ] Atom/RSS feed (for self-hosted readers of the archive)
+- [ ] Speaker diarisation (whisper.cpp supports =--diarize= with a pyannote
+      segment model — if it ends up being worth the setup)
 
 * Out of Scope (deferred or rejected)
 
