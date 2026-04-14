@@ -1,0 +1,398 @@
+#+TITLE: Storitad Ingest — Sixseven Pipeline
+#+SUBTITLE: Python tool that turns phone sidecars into a durable, browsable archive
+#+AUTHOR: Bazza
+#+DATE: 2026-04-14
+#+STARTUP: overview
+
+* Overview
+
+Storitad Ingest is the sixseven-side half of the two-part system. It
+processes sidecar JSON files and media pulled from the Pixel (=Storitad=
+app) into a long-lived archive designed to be readable *without* any
+special software — now, and decades from now.
+
+This spec supersedes the earlier org-mode journal output sketched in
+=storitad-spec.org= section "Ingest Script (sixseven side) — Summary". The
+org-mode output is dropped; the ingest tool produces two outputs from the
+same source data.
+
+** Design Principles
+
+- *Universal readability.* The archive must be consumable by anyone with a
+  web browser. No Emacs, no toolchain, no account.
+- *Source of truth is text.* Markdown files + media, editable in any text
+  editor, machine-parseable by any tool in any future decade.
+- *Rendered view is disposable.* HTML is regenerated from the source on
+  every ingest run. Losing the HTML means re-running one command.
+- *No cloud, no database.* Filesystem is the store.
+- *One command.* =storitad-pull= does everything: pull from phone, ingest,
+  render, open.
+
+** The Two Outputs
+
+1. *Markdown source of truth* — one =.md= per entry under
+   =journal/entries/YYYY/MM/=. YAML frontmatter holds all metadata.
+   Body is the transcript (user-edited if present) followed by a notes
+   section. Media sits alongside as =.m4a= / =.mp4=.
+
+2. *Static HTML site* — a rendered, browsable view at =journal/site/=.
+   Plain HTML + one CSS file + one tiny JS file (search only). Copy the
+   folder to a USB stick, an S3 bucket, or archive.org — it just works.
+
+Git-tracked: the =entries/= directory. Not git-tracked: =site/= (it
+regenerates), media files (too large for most Git setups — use LFS if you
+want them versioned).
+
+* Audience & Failure Modes
+
+Imagined reader: one of Bazza's kids in 2055, pulling out an old hard
+drive. They double-click =site/index.html= in whatever browser exists
+then. Works.
+
+Second imagined reader: some archivist 100 years from now who's lost the
+rendering tool. They open the =.md= files in whatever editor exists. Works.
+
+Third imagined reader: Bazza himself in 2027, searching for "when did
+Casper beat the impossible level". Clicks the search box, types, finds it.
+
+* Repository Layout
+
+#+begin_src text
+storitad/
+├── storitad-spec.org                # Phone app spec (existing)
+├── ingest-spec.org                  # This file
+├── app/                             # Android app (existing)
+├── native/whisper.cpp               # Submodule (existing, phone-side)
+├── ingest/                          # NEW — the Python tool
+│   ├── pyproject.toml
+│   ├── storitad_ingest/
+│   │   ├── __init__.py
+│   │   ├── cli.py                   # storitad-pull entrypoint
+│   │   ├── pull.py                  # adb pull / jmtpfs mount
+│   │   ├── sidecar.py               # JSON parse + validation
+│   │   ├── transcribe.py            # whisper.cpp wrapper (if draft absent)
+│   │   ├── render_markdown.py       # .md + frontmatter writer
+│   │   ├── render_site.py           # HTML + search index writer
+│   │   ├── aliases.py               # recipient alias expansion
+│   │   └── templates/
+│   │       ├── entry.html.j2
+│   │       ├── index.html.j2
+│   │       ├── style.css
+│   │       └── search.js
+│   ├── tests/
+│   └── flake-module.nix             # optional — expose a package
+└── flake.nix                        # root devshell (existing)
+#+end_src
+
+Target install location of the archive itself (outside the git repo):
+
+#+begin_src text
+~/journal/
+├── entries/                         # Source of truth (git or not, up to user)
+│   └── 2026/
+│       └── 04/
+│           ├── 20260414-153200-voice.md
+│           └── 20260414-153200-voice.m4a
+├── processed/                       # Archived sidecars after ingest
+│   └── 2026/04/20260414-153200-voice.json
+└── site/                            # Regenerated every run
+    ├── index.html
+    ├── style.css
+    ├── search.js
+    ├── search-index.json
+    └── entries/
+        └── 2026/04/20260414-153200-voice/
+            ├── index.html
+            └── media.m4a            # symlink or copy
+#+end_src
+
+* Pipeline
+
+** Step 1: Pull from phone
+
+Two transports, user picks per invocation via flag or env var:
+
+- =--transport=adb= — =adb pull /sdcard/Android/data/uk.storitad.capture/files/Documents/Storitad/inbox/ ./staging/=
+- =--transport=mtp= — =jmtpfs= mount + =cp -r= + =fusermount -u=
+
+Only copies =.json= sidecars where =processed == false= plus their paired
+media file. Copies are atomic: if either file is missing, the pair is
+skipped with a warning.
+
+Staging directory = =~/journal/.staging/= (cleaned at the end of a
+successful run).
+
+** Step 2: Validate sidecar
+
+Parse each =.json=, check required fields (=id=, =capturedAt=,
+=durationSeconds=, =mediaFile=, =subject=), and that the companion media
+file exists. Unknown fields are preserved in a passthrough dict so future
+schema versions don't lose data.
+
+Sidecar versions 1 and 2 are both accepted (version 1 just lacks
+=location=, =locationName=, handled via =dict.get(...)=).
+
+** Step 3: Fill transcript if absent
+
+If =transcriptDraft= is null or empty, run =whisper.cpp= (CLI binary, not
+Python bindings) on the media file and capture stdout. Record the model
+used (=whisper-tiny.en= for now) in =transcriptModel=.
+
+On sixseven, =whisper.cpp= is expected on =$PATH= or at a configurable
+binary path. The Nix flake can pin it; Phase 1 just errors if missing.
+
+** Step 4: Expand recipient aliases
+
+Per iteration 2 of the phone spec: the app writes recipient ids verbatim.
+Ingest expands aliases at this step using a YAML config file
+(=~/.config/storitad/aliases.yml= by default):
+
+#+begin_src yaml
+aliases:
+  family: [griffin, julian, casper, emma]
+  boys:   [griffin, julian, casper]
+  # more aliases the user adds over time
+#+end_src
+
+Expansion rule: when =family= appears in =recipients=, the entry is tagged
+both with =family= AND each expanded person id. This makes the entry
+reachable from multiple angles in the site's navigation. Unknown ids pass
+through verbatim.
+
+** Step 5: Write Markdown
+
+One file per entry at
+=~/journal/entries/{YYYY}/{MM}/{basename}.md=. Frontmatter uses YAML
+block, body is transcript + notes:
+
+#+begin_src markdown
+---
+id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+type: voice
+captured_at: 2026-04-14T15:32:00Z
+timezone: Europe/London
+duration_seconds: 154
+subject: Picking Casper up from school
+recipients:
+  - casper
+mood: happy
+tags:
+  - school
+  - geometry-dash
+  - daily
+location:
+  latitude: 51.5074
+  longitude: -0.1278
+  accuracy_m: 12
+device: Pixel 9 Pro
+media: 20260414-153200-voice.m4a
+transcript_model: whisper-tiny.en
+---
+
+## Transcript
+
+Just picked Casper up from school. He was buzzing about beating some
+impossible level in Geometry Dash. He's been stuck on it for weeks and
+finally nailed it today...
+
+## Notes
+
+He beat the impossible level he's been stuck on for weeks.
+#+end_src
+
+Rules:
+- If =notes= is null, omit the =## Notes= section entirely.
+- If =transcriptDraft= is empty/null, body is just =## Transcript= with a
+  =(no transcript)= placeholder so the file always has the structure.
+- The frontmatter =recipients= list is the *phone's* verbatim list (not
+  expanded). Expansion is a site concern, not a source-of-truth concern.
+
+Media file is *copied* (not moved, not symlinked) next to the markdown so
+an archivist grabbing the =entries/= directory gets everything they need.
+
+** Step 6: Render HTML site
+
+Regenerate =~/journal/site/= from scratch every run (avoids stale files).
+
+Templates (Jinja2):
+
+- =index.html.j2= — chronological list of entries, newest first. Grouped
+  by month header. Each row: emoji icon, subject, date, duration,
+  recipient chips, mood. Top-of-page filter buttons for each recipient
+  (including expanded aliases) act as client-side filters (JS toggles
+  =display:none= on non-matching rows). Search box at the top.
+- =entry.html.j2= — single entry page. Subject as =<h1>=. Date +
+  duration. HTML5 =<audio>= or =<video>= tag with =preload="metadata"=.
+  Transcript block (with edit-in-place *not* included; the user edits the
+  =.md= and re-runs ingest). Metadata table at the bottom. Back link.
+- =style.css= — ~150 lines, system-font stack, CSS grid for the index.
+  Dark/light via =prefers-color-scheme=. Inline for the =<style>= in
+  each HTML file to survive CSS loss? No — one shared file is fine and
+  makes the site small. If it goes missing the pages degrade gracefully.
+- =search.js= — ~50 lines of vanilla JS: fetches =search-index.json=,
+  builds a case-insensitive substring matcher over subject + transcript +
+  notes + tags, updates the visible list as the user types. No library,
+  no bundler.
+
+** Step 7: Build search index
+
+=search-index.json= is an array of entry records:
+
+#+begin_src json
+[
+  {
+    "id": "a1b2...",
+    "url": "entries/2026/04/20260414-153200-voice/",
+    "date": "2026-04-14",
+    "subject": "Picking Casper up from school",
+    "text": "casper school geometry-dash daily just picked casper up from school ...",
+    "recipients": ["casper"],
+    "mood": "happy"
+  }
+]
+#+end_src
+
+=text= is a lowercased, whitespace-normalised concatenation of subject +
+transcript + notes + tags, truncated to 2 KB per entry (keeps the index
+under a megabyte for 500 entries). Adequate for Ctrl-F-style discovery.
+Scales far past personal use; if it ever gets too large, swap in a
+precomputed token index with trigram prefiltering — defer until it
+actually matters.
+
+** Step 8: Post-process
+
+For each successfully-processed entry:
+1. Write the sidecar JSON with =processed: true= back *onto the phone*
+   via the same transport. This is the signal to the phone's Pending
+   screen that the entry has been synced.
+2. Move the staging copy of the sidecar to =~/journal/processed/YYYY/MM/=.
+3. Leave the staging media file in place briefly; delete at the end of
+   the run.
+
+If any step fails for an entry, leave the phone's =processed= flag as-is
+so the next run retries. Ingest is idempotent.
+
+** Step 9: Open
+
+At the very end of a successful run, =storitad-pull= opens
+=site/index.html= in the default browser via =xdg-open= (Linux) or the
+=webbrowser= stdlib module.
+
+* CLI
+
+#+begin_src text
+$ storitad-pull                 # full pipeline with default transport (adb)
+$ storitad-pull --transport mtp # jmtpfs transport
+$ storitad-pull --dry-run       # pull + report what would happen, no writes
+$ storitad-pull --no-open       # skip xdg-open at the end
+$ storitad-pull --rerender      # skip pull; re-render site from existing entries
+$ storitad-pull --entry <id>    # re-ingest / re-render a single entry
+#+end_src
+
+Config file at =~/.config/storitad/config.yml= (optional):
+
+#+begin_src yaml
+archive_root: ~/journal
+staging: ~/journal/.staging
+whisper_bin: /run/current-system/sw/bin/whisper-cpp
+whisper_model: ~/models/ggml-tiny.en.bin
+transport: adb
+aliases_file: ~/.config/storitad/aliases.yml
+#+end_src
+
+* Python Package
+
+- Python ≥ 3.11 (stdlib-heavy; we avoid the JSON Schema / dataclass zoo)
+- Dependencies:
+  - =jinja2= — HTML templates
+  - =pyyaml= — frontmatter + aliases config
+  - =click= — CLI
+  - (optional, Phase 2) =rich= — prettier progress output
+- Whisper: call =whisper.cpp= CLI via =subprocess=. No Python bindings,
+  no PyTorch.
+- All else stdlib.
+
+The flake module exposes =ingest= as a =buildPythonApplication= so
+=nix run .#ingest= works.
+
+* Phase Plan — Ingest
+
+** Phase 1 — MVP
+
+- [ ] Scaffold =ingest/= with =pyproject.toml=, =click= CLI skeleton
+- [ ] =pull.py= — adb transport only; skip mtp until user asks
+- [ ] =sidecar.py= — validate v1+v2, passthrough unknown fields
+- [ ] =render_markdown.py= — YAML frontmatter + body, plus media copy
+- [ ] =aliases.py= — load YAML, expand on request
+- [ ] =render_site.py= — Jinja2 templates, chronological index, per-entry
+      pages, search index, vanilla-JS search box
+- [ ] Round-trip test with a dozen hand-crafted sidecars
+- [ ] =storitad-pull= end-to-end against the real phone, open in browser
+
+** Phase 2 — Polish
+
+- [ ] =transcribe.py= — run whisper.cpp when =transcriptDraft= is absent
+- [ ] mtp transport via =jmtpfs=
+- [ ] Phone-side =processed=true= writeback
+- [ ] Entry filter chips on the index page (recipient, mood, year)
+- [ ] PDF export (=weasyprint= — one PDF per year; regenerate alongside HTML)
+
+** Phase 3 — Nice to Have
+
+- [ ] Reverse geocoding of =locationName= via a local GeoNames dump
+- [ ] Thumbnail generation for video entries (one keyframe per entry)
+- [ ] Diff-based rebuild (only regenerate pages whose entries changed)
+- [ ] =--since=YYYY-MM-DD= flag on =storitad-pull=
+- [ ] Atom/RSS feed (for self-hosted readers of the archive)
+
+* Out of Scope (deferred or rejected)
+
+- Multi-user accounts / ACLs — this is a personal archive, not a CMS.
+- Cloud sync — the archive is deliberately offline-first; the user can
+  =rsync= the folder to any destination they like.
+- On-demand transcript generation in the browser — runs on sixseven only.
+- Edit-in-browser — the =.md= source is the edit surface; re-run ingest.
+- Comments / likes / reactions — not that kind of platform.
+
+* Appendix: HTML output skeleton
+
+Minimal example of what =entries/2026/04/20260414-153200-voice/index.html=
+looks like post-render (trimmed for brevity):
+
+#+begin_src html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Picking Casper up from school — Storitad</title>
+    <link rel="stylesheet" href="../../../../style.css">
+  </head>
+  <body>
+    <a class="back" href="../../../../index.html">← All entries</a>
+    <article>
+      <h1>Picking Casper up from school</h1>
+      <p class="meta">
+        14 Apr 2026 · 2m 34s · <span class="chip">🎮 Casper</span>
+        <span class="chip">😊 happy</span>
+      </p>
+      <audio controls preload="metadata" src="media.m4a"></audio>
+      <section class="transcript">
+        <h2>Transcript</h2>
+        <p>Just picked Casper up from school ...</p>
+      </section>
+      <section class="notes">
+        <h2>Notes</h2>
+        <p>He beat the impossible level he's been stuck on for weeks.</p>
+      </section>
+      <footer class="metadata">
+        <dl>
+          <dt>Device</dt><dd>Pixel 9 Pro</dd>
+          <dt>Location</dt><dd>51.5074, −0.1278 · ±12 m</dd>
+        </dl>
+      </footer>
+    </article>
+  </body>
+</html>
+#+end_src
+
+Site is static, self-contained, one click from any file manager.
