@@ -28,8 +28,39 @@
         pythonEnv = pkgs.python311.withPackages (ps: with ps; [
           click jinja2 pyyaml pytest
         ]);
+
+        storitadIngest = pkgs.python311Packages.buildPythonApplication {
+          pname = "storitad-ingest";
+          version = "0.1.0";
+          pyproject = true;
+          src = ./ingest;
+          build-system = [ pkgs.python311Packages.setuptools ];
+          dependencies = with pkgs.python311Packages; [
+            click jinja2 pyyaml
+          ];
+          # Put whisper-cli + ffmpeg on PATH at runtime so subprocess.check_call
+          # finds them without user-visible $PATH munging.
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postFixup = ''
+            wrapProgram $out/bin/storitad-pull \
+              --prefix PATH : ${pkgs.lib.makeBinPath [
+                pkgs.whisper-cpp
+                pkgs.ffmpeg-headless
+                pkgs.android-tools
+              ]}
+          '';
+          doCheck = false;
+        };
       in
       {
+        packages.default = storitadIngest;
+        packages.storitad-ingest = storitadIngest;
+        apps.default = {
+          type = "app";
+          program = "${storitadIngest}/bin/storitad-pull";
+        };
+        apps.storitad-pull = self.apps.${system}.default;
+
         devShells.default = pkgs.mkShell {
           buildInputs = [
             androidSdk
