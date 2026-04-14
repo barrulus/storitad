@@ -68,7 +68,11 @@ private fun App(startOnRecording: Boolean) {
             ReviewScreen(
                 basename = basename,
                 onContinue = { nav.navigate(Route.Metadata.of(basename)) },
-                onRerecord = { nav.popBackStack(Route.Recording.path, inclusive = false) }
+                onRerecord = {
+                    val reRoute = if (basename.contains("-video"))
+                        Route.VideoRecording.path else Route.Recording.path
+                    nav.navigate(reRoute) { popUpTo(Route.Home.path) }
+                }
             )
         }
         composable(

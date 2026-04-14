@@ -161,6 +161,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                         DraftHolder.begin(base, now, zone, file)
 
                         val i = Intent(ctx, RecordingService::class.java)
+                            .putExtra(RecordingService.EXTRA_TYPE, RecordingService.TYPE_CAMERA)
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i) else ctx.startService(i)
                         ctx.bindService(i, conn, Context.BIND_AUTO_CREATE)
 

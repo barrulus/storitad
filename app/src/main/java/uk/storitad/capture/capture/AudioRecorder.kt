@@ -105,15 +105,16 @@ class AudioRecorder(private val context: Context) {
     }
 
     private suspend fun pollAmplitudes() {
-        val ring = FloatArray(AMP_RING)
-        var i = 0
+        val buf = FloatArray(AMP_RING)
         while (scope.isActive && recorder != null) {
             if (!isPaused) {
                 val r = recorder
                 val max = runCatching { r?.maxAmplitude ?: 0 }.getOrDefault(0)
-                ring[i] = (max.coerceAtMost(32767) / 32767f)
-                i = (i + 1) % ring.size
-                _amplitudes.value = ring.copyOf()
+                val v = (max.coerceAtMost(32767) / 32767f)
+                // Shift left: drop [0], append new at end — rolling scroll.
+                for (j in 0 until buf.size - 1) buf[j] = buf[j + 1]
+                buf[buf.size - 1] = v
+                _amplitudes.value = buf.copyOf()
             }
             delay(50)
         }

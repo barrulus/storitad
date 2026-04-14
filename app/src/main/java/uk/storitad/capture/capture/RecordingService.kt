@@ -6,7 +6,9 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import uk.storitad.capture.MainActivity
@@ -20,8 +22,23 @@ class RecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ensureChannel()
-        startForeground(NOTIF_ID, buildNotification("Recording…"))
+        val type = intent?.getStringExtra(EXTRA_TYPE) ?: TYPE_MIC
+        startInForeground(type)
         return START_NOT_STICKY
+    }
+
+    private fun startInForeground(type: String) {
+        val notif = buildNotification("Recording…")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val svcType = when (type) {
+                TYPE_CAMERA -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                               ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            startForeground(NOTIF_ID, notif, svcType)
+        } else {
+            startForeground(NOTIF_ID, notif)
+        }
     }
 
     fun updateElapsed(ms: Long) {
@@ -61,5 +78,8 @@ class RecordingService : Service() {
     companion object {
         const val CHANNEL = "storitad.recording"
         const val NOTIF_ID = 1001
+        const val EXTRA_TYPE = "type"
+        const val TYPE_MIC = "mic"
+        const val TYPE_CAMERA = "camera"
     }
 }
