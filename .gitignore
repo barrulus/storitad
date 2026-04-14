@@ -16,3 +16,6 @@ result
 result-*
 .direnv/
 .claude/
+__pycache__/
+.pytest_cache/
+*.egg-info/

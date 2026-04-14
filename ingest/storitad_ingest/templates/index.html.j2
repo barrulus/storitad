@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Storitad — Journal</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header>
+      <h1>Journal</h1>
+      <p>{{ entries|length }} entr{{ 'y' if entries|length == 1 else 'ies' }}</p>
+      <input class="search" type="search" placeholder="Search subject, transcript, notes…" />
+      {% if recipient_filters %}
+      <div class="filters">
+        {% for r in recipient_filters %}
+        <button class="filter" data-filter="{{ r.id }}">{{ r.emoji }} {{ r.label }}</button>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </header>
+    <main>
+      {% set current_month = namespace(v=None) %}
+      <ul class="entries">
+        {% for e in entries %}
+          {% if e.month_label != current_month.v %}
+            {% set current_month.v = e.month_label %}
+          </ul>
+          <p class="month">{{ e.month_label }}</p>
+          <ul class="entries">
+          {% endif %}
+          <li data-id="{{ e.id }}">
+            <a href="{{ e.url }}">
+              <div class="title">{{ e.icon }} {{ e.subject }}</div>
+              <div class="meta">
+                {{ e.date }} · {{ e.duration }}
+                {% for chip in e.chips %}<span class="chip">{{ chip }}</span>{% endfor %}
+              </div>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="empty" style="display:none">No matches.</p>
+    </main>
+    <script src="search.js"></script>
+  </body>
+</html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>{{ entry.subject }} — Storitad</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <link rel="stylesheet" href="{{ root_css }}">
+  </head>
+  <body>
+    <a class="back" href="{{ back_url }}">← All entries</a>
+    <main>
+      <article>
+        <h1>{{ entry.subject }}</h1>
+        <p class="meta">
+          {{ entry.date_long }} · {{ entry.duration }}
+          {% for chip in entry.chips %}<span class="chip">{{ chip }}</span>{% endfor %}
+        </p>
+        {% if entry.type == "voice" %}
+          <audio controls preload="metadata" src="{{ entry.media }}"></audio>
+        {% else %}
+          <video controls preload="metadata" src="{{ entry.media }}"></video>
+        {% endif %}
+
+        <section class="transcript">
+          <h2>Transcript</h2>
+          <p>{{ entry.transcript or "(no transcript)" }}</p>
+        </section>
+
+        {% if entry.notes %}
+        <section class="notes">
+          <h2>Notes</h2>
+          <p>{{ entry.notes }}</p>
+        </section>
+        {% endif %}
+
+        {% if entry.phone_transcript %}
+        <section class="phone-transcript">
+          <h2>Phone transcript (tiny.en, reference)</h2>
+          <p>{{ entry.phone_transcript }}</p>
+        </section>
+        {% endif %}
+
+        <footer class="metadata">
+          <dl>
+            {% if entry.recipients %}<dt>Recipients</dt><dd>{{ entry.recipients_display }}</dd>{% endif %}
+            {% if entry.mood %}<dt>Mood</dt><dd>{{ entry.mood }}</dd>{% endif %}
+            {% if entry.tags %}<dt>Tags</dt><dd>{{ entry.tags|join(", ") }}</dd>{% endif %}
+            {% if entry.location_display %}<dt>Location</dt><dd>{{ entry.location_display }}</dd>{% endif %}
+            <dt>Device</dt><dd>{{ entry.device }}</dd>
+            <dt>Captured</dt><dd>{{ entry.captured_at }}</dd>
+            {% if entry.transcript_model %}<dt>Transcript model</dt><dd>{{ entry.transcript_model }}</dd>{% endif %}
+          </dl>
+        </footer>
+      </article>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "storitad-ingest"
+version = "0.1.0"
+description = "Sixseven-side ingest: phone sidecars → Markdown + static HTML archive"
+authors = [{ name = "Bazza" }]
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+storitad-pull = "storitad_ingest.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["storitad_ingest*"]
+
+[tool.setuptools.package-data]
+storitad_ingest = ["templates/*.j2", "templates/*.css", "templates/*.js"]

@@ -25,6 +25,9 @@
           cmake-3-22-1
           emulator
         ]);
+        pythonEnv = pkgs.python311.withPackages (ps: with ps; [
+          click jinja2 pyyaml pytest
+        ]);
       in
       {
         devShells.default = pkgs.mkShell {
@@ -33,6 +36,10 @@
             pkgs.jdk17
             pkgs.gradle
             pkgs.kotlin
+            pythonEnv
+            pkgs.ffmpeg-headless
+            pkgs.whisper-cpp
+            pkgs.android-tools
           ];
           ANDROID_HOME = "${androidSdk}/share/android-sdk";
           ANDROID_SDK_ROOT = "${androidSdk}/share/android-sdk";
