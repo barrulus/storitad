@@ -14,15 +14,28 @@ import uk.storitad.capture.ui.drafts.DraftHolder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReviewScreen(basename: String, onContinue: () -> Unit, onRerecord: () -> Unit) {
+fun ReviewScreen(
+    basename: String,
+    onContinue: () -> Unit,
+    onRerecord: () -> Unit,
+    onDiscard: () -> Unit
+) {
     val draft = DraftHolder.get()
     val isVideo = draft?.mediaFile?.extension?.equals("mp4", ignoreCase = true) == true
     val player = remember { AudioPlayer() }
     var playing by remember { mutableStateOf(false) }
+    var confirmDiscard by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) { onDispose { player.stop() } }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Review") }) }) { pad ->
+    Scaffold(topBar = {
+        TopAppBar(
+            title = { Text("Review") },
+            navigationIcon = {
+                TextButton(onClick = { confirmDiscard = true }) { Text("Discard") }
+            }
+        )
+    }) { pad ->
         Column(
             Modifier.padding(pad).fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
@@ -63,5 +76,22 @@ fun ReviewScreen(basename: String, onContinue: () -> Unit, onRerecord: () -> Uni
                 ) { Text("Continue") }
             }
         }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDiscard = false
+                    player.stop()
+                    DraftHolder.clear()
+                    onDiscard()
+                }) { Text("Discard") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("Keep") } },
+            title = { Text("Discard recording?") },
+            text = { Text("This deletes the audio and cannot be undone.") }
+        )
     }
 }

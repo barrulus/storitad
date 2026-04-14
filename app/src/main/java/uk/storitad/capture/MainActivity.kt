@@ -72,7 +72,8 @@ private fun App(startOnRecording: Boolean) {
                     val reRoute = if (basename.contains("-video"))
                         Route.VideoRecording.path else Route.Recording.path
                     nav.navigate(reRoute) { popUpTo(Route.Home.path) }
-                }
+                },
+                onDiscard = { nav.popBackStack(Route.Home.path, inclusive = false) }
             )
         }
         composable(
@@ -88,7 +89,7 @@ private fun App(startOnRecording: Boolean) {
                 basename = basename,
                 editExisting = edit,
                 onSaved = { nav.popBackStack(Route.Home.path, inclusive = false) },
-                onDiscard = { nav.popBackStack() }
+                onDiscard = { nav.popBackStack(Route.Home.path, inclusive = false) }
             )
         }
         composable(Route.Pending.path) {
