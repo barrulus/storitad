@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">Storitad</string>
+    <string name="record_voice">Record Voice</string>
+    <string name="record_video">Record Video</string>
+    <string name="history">History</string>
+    <string name="pending">Pending</string>
+    <string name="quick_capture_shortcut">Quick Voice</string>
+    <string name="quick_capture_shortcut_long">Start voice recording</string>
+    <string name="stop">Stop</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="discard">Discard</string>
+    <string name="re_record">Re-record</string>
+    <string name="continue_action">Continue</string>
+    <string name="subject_label">Subject</string>
+    <string name="recipients_label">Recipients</string>
+    <string name="mood_label">Mood</string>
+    <string name="tags_label">Tags</string>
+    <string name="notes_label">Notes</string>
+    <string name="location_label">Location</string>
+</resources>

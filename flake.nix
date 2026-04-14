@@ -16,9 +16,11 @@
         pkgs = nixpkgs.legacyPackages.${system};
         androidSdk = android-nixpkgs.sdk.${system} (sdkPkgs: with sdkPkgs; [
           build-tools-34-0-0
+          build-tools-35-0-0
           cmdline-tools-latest
           platform-tools
           platforms-android-34
+          platforms-android-35
           emulator
         ]);
       in
@@ -33,7 +35,7 @@
           ANDROID_HOME = "${androidSdk}/share/android-sdk";
           ANDROID_SDK_ROOT = "${androidSdk}/share/android-sdk";
           JAVA_HOME = "${pkgs.jdk17}";
-          GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/share/android-sdk/build-tools/34.0.0/aapt2";
+          GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/share/android-sdk/build-tools/35.0.0/aapt2";
         };
       });
 }
