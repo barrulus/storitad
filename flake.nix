@@ -21,6 +21,8 @@
           platform-tools
           platforms-android-34
           platforms-android-35
+          ndk-26-3-11579264
+          cmake-3-22-1
           emulator
         ]);
       in
@@ -34,6 +36,7 @@
           ];
           ANDROID_HOME = "${androidSdk}/share/android-sdk";
           ANDROID_SDK_ROOT = "${androidSdk}/share/android-sdk";
+          ANDROID_NDK_ROOT = "${androidSdk}/share/android-sdk/ndk/26.3.11579264";
           JAVA_HOME = "${pkgs.jdk17}";
           GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/share/android-sdk/build-tools/35.0.0/aapt2";
         };
