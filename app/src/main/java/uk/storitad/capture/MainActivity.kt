@@ -15,6 +15,7 @@ import uk.storitad.capture.ui.HomeScreen
 import uk.storitad.capture.ui.MetadataScreen
 import uk.storitad.capture.ui.RecordingScreen
 import uk.storitad.capture.ui.ReviewScreen
+import uk.storitad.capture.ui.SettingsScreen
 import uk.storitad.capture.ui.VideoRecordingScreen
 import uk.storitad.capture.ui.Route
 import uk.storitad.capture.ui.theme.StoritadTheme
@@ -37,7 +38,8 @@ private fun App(startOnRecording: Boolean) {
                 onRecordVoice = { nav.navigate(Route.Recording.path) },
                 onRecordVideo = { nav.navigate(Route.VideoRecording.path) },
                 onPending = { nav.navigate(Route.Pending.path) },
-                onHistory = { nav.navigate(Route.History.path) }
+                onHistory = { nav.navigate(Route.History.path) },
+                onSettings = { nav.navigate(Route.Settings.path) }
             )
         }
         composable(Route.Recording.path) {
@@ -120,6 +122,9 @@ private fun App(startOnRecording: Boolean) {
                 onBack = { nav.popBackStack() },
                 onEdit = { b -> nav.navigate(Route.Metadata.of(b, edit = true)) }
             )
+        }
+        composable(Route.Settings.path) {
+            SettingsScreen(onBack = { nav.popBackStack() })
         }
     }
 }

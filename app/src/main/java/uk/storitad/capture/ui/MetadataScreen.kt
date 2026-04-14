@@ -15,23 +15,16 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import kotlinx.coroutines.launch
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import uk.storitad.capture.BuildConfig
 import uk.storitad.capture.location.LocationProvider
 import uk.storitad.capture.metadata.EntryMetadata
 import uk.storitad.capture.metadata.GeoFix
 import uk.storitad.capture.metadata.MediaType
 import uk.storitad.capture.metadata.MetadataRepository
+import uk.storitad.capture.metadata.RecipientsRepository
 import uk.storitad.capture.storage.FileManager
 import uk.storitad.capture.ui.drafts.DraftHolder
 import java.util.UUID
-
-@Serializable
-private data class RecipientPreset(val id: String, val label: String, val emoji: String)
-
-@Serializable
-private data class RecipientsConfig(val recipients: List<RecipientPreset>)
 
 private val MOODS = listOf(
     "happy" to "😊", "proud" to "💪", "reflective" to "🤔", "grateful" to "🙏",
@@ -48,11 +41,7 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
     val draft = DraftHolder.get()
 
     val recipientPresets = remember {
-        runCatching {
-            val text = ctx.assets.open("recipients.json").bufferedReader().use { it.readText() }
-            Json { ignoreUnknownKeys = true }
-                .decodeFromString(RecipientsConfig.serializer(), text).recipients
-        }.getOrDefault(emptyList())
+        runCatching { RecipientsRepository(ctx).list() }.getOrDefault(emptyList())
     }
 
     val existing: EntryMetadata? = remember(basename, editExisting) {

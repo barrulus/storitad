@@ -6,6 +6,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,7 +26,8 @@ fun HomeScreen(
     onRecordVoice: () -> Unit,
     onRecordVideo: () -> Unit,
     onPending: () -> Unit,
-    onHistory: () -> Unit
+    onHistory: () -> Unit,
+    onSettings: () -> Unit
 ) {
     val ctx = LocalContext.current
     val pendingCount by produceState(initialValue = 0) {
@@ -34,7 +36,16 @@ fun HomeScreen(
         }.getOrDefault(0)
     }
 
-    Scaffold(topBar = { CenterAlignedTopAppBar(title = { Text("Storitad") }) }) { pad ->
+    Scaffold(topBar = {
+        CenterAlignedTopAppBar(
+            title = { Text("Storitad") },
+            actions = {
+                IconButton(onClick = onSettings) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                }
+            }
+        )
+    }) { pad ->
         Column(
             Modifier.padding(pad).fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)

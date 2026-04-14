@@ -15,4 +15,5 @@ sealed class Route(val path: String) {
     data object Detail : Route("detail/{basename}") {
         fun of(basename: String) = "detail/$basename"
     }
+    data object Settings : Route("settings")
 }
