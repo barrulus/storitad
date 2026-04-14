@@ -67,6 +67,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.datetime)
     implementation(libs.accompanist.permissions)
+    implementation(libs.work.runtime.ktx)
 
     implementation(libs.camerax.core)
     implementation(libs.camerax.camera2)
