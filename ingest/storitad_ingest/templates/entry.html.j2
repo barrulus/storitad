@@ -9,8 +9,14 @@
   <body>
     <a class="back" href="{{ back_url }}">← All entries</a>
     <main>
-      <article>
-        <h1>{{ entry.subject }}</h1>
+      <article data-entry-id="{{ entry.id }}">
+        {% if edit_mode %}
+        <div class="row-actions">
+          <button type="button" id="edit-btn">Edit</button>
+          <button type="button" id="delete-btn" class="danger">Delete</button>
+        </div>
+        {% endif %}
+        <h1 data-field="subject">{{ entry.subject }}</h1>
         <p class="meta">
           {{ entry.date_long }} · {{ entry.duration }}
           {% for chip in entry.chips %}<span class="chip">{{ chip }}</span>{% endfor %}
@@ -26,10 +32,10 @@
           <p>{{ entry.transcript or "(no transcript)" }}</p>
         </section>
 
-        {% if entry.notes %}
+        {% if entry.notes or edit_mode %}
         <section class="notes">
           <h2>Notes</h2>
-          <p>{{ entry.notes }}</p>
+          <p data-field="notes">{{ entry.notes or "" }}</p>
         </section>
         {% endif %}
 
@@ -44,7 +50,7 @@
           <dl>
             {% if entry.recipients %}<dt>Recipients</dt><dd>{{ entry.recipients_display }}</dd>{% endif %}
             {% if entry.mood %}<dt>Mood</dt><dd>{{ entry.mood }}</dd>{% endif %}
-            {% if entry.tags %}<dt>Tags</dt><dd>{{ entry.tags|join(", ") }}</dd>{% endif %}
+            {% if entry.tags or edit_mode %}<dt>Tags</dt><dd data-field="tags">{{ entry.tags|join(", ") }}</dd>{% endif %}
             {% if entry.location_display %}<dt>Location</dt><dd>{{ entry.location_display }}</dd>{% endif %}
             <dt>Device</dt><dd>{{ entry.device }}</dd>
             <dt>Captured</dt><dd>{{ entry.captured_at }}</dd>
@@ -53,5 +59,60 @@
         </footer>
       </article>
     </main>
+    {% if edit_mode %}
+    <script>
+      (function () {
+        const article = document.querySelector('article[data-entry-id]');
+        const id = article.dataset.entryId;
+        const editBtn = document.getElementById('edit-btn');
+        const deleteBtn = document.getElementById('delete-btn');
+
+        deleteBtn.addEventListener('click', async () => {
+          if (!confirm('Delete this entry? This removes the markdown file and media from your journal.')) return;
+          const res = await fetch(`/api/entry/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          if (res.ok) window.location.href = '{{ back_url }}';
+          else alert('Delete failed: ' + res.status);
+        });
+
+        editBtn.addEventListener('click', () => {
+          const subject = article.querySelector('[data-field="subject"]');
+          const notes = article.querySelector('[data-field="notes"]');
+          const tags = article.querySelector('[data-field="tags"]');
+
+          const sInput = document.createElement('input');
+          sInput.className = 'edit-field'; sInput.value = subject.textContent.trim();
+          subject.replaceWith(sInput);
+
+          const nInput = document.createElement('textarea');
+          nInput.className = 'edit-field'; nInput.value = notes ? notes.textContent.trim() : '';
+          if (notes) notes.replaceWith(nInput);
+
+          const tInput = document.createElement('input');
+          tInput.className = 'edit-field';
+          tInput.value = tags ? tags.textContent.trim() : '';
+          tInput.placeholder = 'comma-separated tags';
+          if (tags) tags.replaceWith(tInput);
+
+          editBtn.textContent = 'Save';
+          editBtn.replaceWith(editBtn.cloneNode(true));
+          const saveBtn = document.getElementById('edit-btn');
+          saveBtn.addEventListener('click', async () => {
+            const payload = {
+              subject: sInput.value.trim(),
+              notes: nInput.value.trim(),
+              tags: tInput.value.split(',').map(s => s.trim()).filter(Boolean),
+            };
+            const res = await fetch(`/api/entry/${encodeURIComponent(id)}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            if (res.ok) window.location.reload();
+            else alert('Save failed: ' + res.status);
+          });
+        });
+      })();
+    </script>
+    {% endif %}
   </body>
 </html>

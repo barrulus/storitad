@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Storitad — Stats</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header>
+      <h1>Stats</h1>
+      <nav class="nav">
+        <a href="index.html">Entries</a>
+        <a href="stats.html" class="current">Stats</a>
+      </nav>
+    </header>
+    <main>
+      {% if totals.count == 0 %}
+        <p class="empty">No entries yet.</p>
+      {% else %}
+        <div class="stats-grid">
+          <div class="stat"><div class="k">Total</div><div class="v">{{ totals.count }}</div></div>
+          <div class="stat"><div class="k">Voice</div><div class="v">{{ totals.voice }}</div></div>
+          <div class="stat"><div class="k">Video</div><div class="v">{{ totals.video }}</div></div>
+          <div class="stat"><div class="k">Total time</div><div class="v">{{ totals.total_duration }}</div></div>
+          <div class="stat"><div class="k">Average</div><div class="v">{{ totals.avg_duration }}</div></div>
+          <div class="stat"><div class="k">Longest</div><div class="v">{{ totals.longest_duration }}</div></div>
+          <div class="stat"><div class="k">Shortest</div><div class="v">{{ totals.shortest_duration }}</div></div>
+        </div>
+
+        <h2>Entries per month</h2>
+        <div class="timeline">
+          {# Inline SVG bar chart — voice stacked on video. viewBox width = months*20, height=100 body + 20 label. #}
+          {% set peak = months|map(attribute='total')|max %}
+          {% set w = months|length * 24 %}
+          <svg viewBox="0 0 {{ w }} 140" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            {% for b in months %}
+              {% set x = loop.index0 * 24 + 2 %}
+              {% set total_h = 100 * (b.total / peak) if peak else 0 %}
+              {% set video_h = 100 * (b.video / peak) if peak else 0 %}
+              {% set voice_h = total_h - video_h %}
+              {% if b.video > 0 %}
+                <rect x="{{ x }}" y="{{ 110 - total_h }}" width="20" height="{{ video_h }}" fill="var(--muted)" opacity="0.6"/>
+              {% endif %}
+              {% if b.voice > 0 %}
+                <rect x="{{ x }}" y="{{ 110 - voice_h }}" width="20" height="{{ voice_h }}" fill="var(--primary)"/>
+              {% endif %}
+              {% if b.total > 0 %}
+                <text x="{{ x + 10 }}" y="{{ 108 - total_h }}" font-size="8" text-anchor="middle" fill="var(--fg)">{{ b.total }}</text>
+              {% endif %}
+              <text x="{{ x + 10 }}" y="124" font-size="8" text-anchor="middle" fill="var(--muted)">{{ b.label }}</text>
+            {% endfor %}
+          </svg>
+          <div class="legend">
+            <span><span class="sw" style="background:var(--primary)"></span>Voice</span>
+            <span><span class="sw" style="background:var(--muted);opacity:.6"></span>Video</span>
+          </div>
+        </div>
+
+        {% if recipients %}
+        <h2>Recipients</h2>
+        <div class="kv-list">
+          {% for name, count in recipients %}
+            <div class="k">{{ name }}</div><div class="v">{{ count }}</div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if tags %}
+        <h2>Top tags</h2>
+        <div class="kv-list">
+          {% for tag, count in tags %}
+            <div class="k">#{{ tag }}</div><div class="v">{{ count }}</div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      {% endif %}
+    </main>
+  </body>
+</html>

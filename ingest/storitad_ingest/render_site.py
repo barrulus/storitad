@@ -87,7 +87,70 @@ def _template_env() -> Environment:
     )
 
 
-def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None) -> None:
+def _fmt_dur(seconds: int) -> str:
+    h, rem = divmod(int(seconds or 0), 3600)
+    m, s = divmod(rem, 60)
+    if h: return f"{h}h {m:02d}m"
+    if m: return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+def _compute_stats(entries: list[dict]) -> dict:
+    """`entries` is the list of dicts fed into the entry template."""
+    if not entries:
+        return {"count": 0, "voice": 0, "video": 0,
+                "total_duration": "0s", "avg_duration": "0s",
+                "longest_duration": "0s", "shortest_duration": "0s",
+                "months": [], "recipients": [], "tags": []}
+
+    voice = sum(1 for e in entries if e["type"] == "voice")
+    durations = [int(e.get("duration_seconds") or 0) for e in entries]
+    total = sum(durations)
+    n = len(entries)
+
+    # Month bucket: (year, month) → [voice, video]
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for e in entries:
+        iso = e.get("captured_at") or ""
+        if not iso: continue
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+        key = (dt.year, dt.month)
+        b = buckets.setdefault(key, [0, 0])
+        if e["type"] == "voice": b[0] += 1
+        else: b[1] += 1
+    keys = sorted(buckets.keys())
+    months_dense: list[dict] = []
+    if keys:
+        y, m = keys[0]; y_end, m_end = keys[-1]
+        while (y, m) <= (y_end, m_end):
+            v, vd = buckets.get((y, m), [0, 0])
+            months_dense.append({"label": f"{y}-{m:02d}", "voice": v, "video": vd, "total": v + vd})
+            m += 1
+            if m > 12: m = 1; y += 1
+    months = months_dense[-12:]
+
+    recipient_counts: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
+    for e in entries:
+        for r in e.get("recipients") or []:
+            recipient_counts[r] = recipient_counts.get(r, 0) + 1
+        for t in e.get("tags") or []:
+            tag_counts[t] = tag_counts.get(t, 0) + 1
+
+    return {
+        "count": n, "voice": voice, "video": n - voice,
+        "total_duration": _fmt_dur(total),
+        "avg_duration": _fmt_dur(total // n),
+        "longest_duration": _fmt_dur(max(durations)),
+        "shortest_duration": _fmt_dur(min(durations)),
+        "months": months,
+        "recipients": sorted(recipient_counts.items(), key=lambda kv: -kv[1]),
+        "tags": sorted(tag_counts.items(), key=lambda kv: -kv[1])[:10],
+    }
+
+
+def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None,
+           edit_mode: bool = False) -> None:
     emoji = {**DEFAULT_RECIPIENT_EMOJI, **(recipient_emoji or {})}
     entries_root = archive_root / "entries"
     site = archive_root / "site"
@@ -103,6 +166,7 @@ def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None) ->
     env = _template_env()
     entry_tpl = env.get_template("entry.html.j2")
     index_tpl = env.get_template("index.html.j2")
+    stats_tpl = env.get_template("stats.html.j2")
 
     # Gather entries
     raw: list[tuple[Path, dict, str, str]] = []   # (md_path, fm, transcript, notes)
@@ -116,6 +180,7 @@ def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None) ->
 
     index_entries = []
     search_index = []
+    stats_entries: list[dict] = []
     recipients_seen: dict[str, int] = {}
 
     for md, fm, transcript, notes in raw:
@@ -152,6 +217,7 @@ def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None) ->
             "subject": fm.get("subject", basename),
             "date_long": _format_date_long(iso) if iso else "",
             "duration": _format_duration(fm.get("duration_seconds") or 0),
+            "duration_seconds": int(fm.get("duration_seconds") or 0),
             "media": media_name,
             "transcript": transcript,
             "notes": notes,
@@ -173,7 +239,7 @@ def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None) ->
         back = "../" * depth_to_site + "index.html"
         css  = "../" * depth_to_site + "style.css"
         (out_dir / "index.html").write_text(
-            entry_tpl.render(entry=entry, root_css=css, back_url=back)
+            entry_tpl.render(entry=entry, root_css=css, back_url=back, edit_mode=edit_mode)
         )
 
         url_from_site = "/".join(("entries", *rel_dir.parts, basename, "index.html"))
@@ -187,6 +253,14 @@ def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None) ->
             "month_label": _month_label(iso) if iso else "",
             "duration": entry["duration"],
             "chips": chips,
+        })
+
+        stats_entries.append({
+            "type": entry["type"],
+            "duration_seconds": entry["duration_seconds"],
+            "captured_at": iso,
+            "recipients": entry["recipients"],
+            "tags": entry["tags"],
         })
 
         for r in entry["recipients"]:
@@ -217,3 +291,11 @@ def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None) ->
         index_tpl.render(entries=index_entries, recipient_filters=recipient_filters)
     )
     (site / "search-index.json").write_text(json.dumps(search_index, ensure_ascii=False))
+
+    stats = _compute_stats(stats_entries)
+    (site / "stats.html").write_text(
+        stats_tpl.render(
+            totals=stats, months=stats["months"],
+            recipients=stats["recipients"], tags=stats["tags"],
+        )
+    )

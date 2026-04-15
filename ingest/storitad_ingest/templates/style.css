@@ -38,3 +38,21 @@ footer.metadata dl { display: grid; grid-template-columns: max-content 1fr; gap:
 footer.metadata dt { color: var(--muted); font-weight: 500 }
 footer.metadata dd { margin: 0 }
 .empty { text-align: center; padding: 48px 0; color: var(--muted) }
+.nav { display: flex; gap: 12px; font-size: .9rem; margin-bottom: 12px }
+.nav a { text-decoration: none; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg) }
+.nav a.current { background: var(--primary); color: var(--bg); border-color: var(--primary) }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 16px 0 }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px }
+.stat .k { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em }
+.stat .v { font-size: 1.25rem; font-weight: 600 }
+.timeline { margin: 16px 0 }
+.timeline svg { width: 100%; height: 180px; display: block }
+.legend { display: flex; gap: 16px; font-size: .85rem; color: var(--muted); margin-top: 8px }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle }
+.kv-list { display: grid; grid-template-columns: 1fr max-content; gap: 4px 16px; font-size: .95rem }
+.kv-list .k { color: var(--fg) } .kv-list .v { color: var(--muted) }
+.row-actions { display: flex; gap: 8px; margin: 16px 0 }
+.row-actions button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg); cursor: pointer; font-size: .85rem }
+.row-actions button.danger { border-color: #c44; color: #c44 }
+.edit-field { width: 100%; margin: 4px 0 8px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit }
+textarea.edit-field { min-height: 120px; resize: vertical }

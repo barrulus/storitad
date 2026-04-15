@@ -11,6 +11,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import uk.storitad.capture.ui.DetailScreen
 import uk.storitad.capture.ui.EntryListScreen
+import uk.storitad.capture.ui.HistoryScreen
 import uk.storitad.capture.ui.HomeScreen
 import uk.storitad.capture.ui.MetadataScreen
 import uk.storitad.capture.ui.RecordingScreen
@@ -104,13 +105,7 @@ private fun App(startOnRecording: Boolean) {
             )
         }
         composable(Route.History.path) {
-            EntryListScreen(
-                title = "History",
-                onlyPending = false,
-                onOpen = { basename -> nav.navigate(Route.Detail.of(basename)) },
-                onEdit = { basename -> nav.navigate(Route.Metadata.of(basename, edit = true)) },
-                onBack = { nav.popBackStack() }
-            )
+            HistoryScreen(onBack = { nav.popBackStack() })
         }
         composable(
             Route.Detail.path,

@@ -24,6 +24,35 @@ def _adb(*args: str) -> str:
     return subprocess.check_output(["adb", *args], text=True)
 
 
+def phone_rm(*names: str) -> None:
+    """Delete files from the phone's inbox by basename. Silent on ENOENT."""
+    if not names:
+        return
+    paths = " ".join(f"'{PHONE_INBOX_PATH}/{n}'" for n in names)
+    subprocess.call(["adb", "shell", f"rm -f {paths}"], stdout=subprocess.DEVNULL)
+
+
+def phone_inbox_listing() -> list[tuple[str, int]]:
+    """Return [(filename, size_bytes)] for everything currently in the phone's inbox."""
+    try:
+        out = _adb("shell", f"ls -la '{PHONE_INBOX_PATH}' 2>/dev/null")
+    except subprocess.CalledProcessError:
+        return []
+    rows: list[tuple[str, int]] = []
+    for line in out.splitlines():
+        parts = line.split()
+        # Typical: -rw-rw---- 1 u0_a123 ext_data_rw 1234567 2026-04-01 12:00 foo.m4a
+        if len(parts) < 8 or not parts[0].startswith("-"):
+            continue
+        try:
+            size = int(parts[4])
+        except ValueError:
+            continue
+        name = parts[-1]
+        rows.append((name, size))
+    return rows
+
+
 def _adb_ok() -> bool:
     try:
         out = _adb("devices")

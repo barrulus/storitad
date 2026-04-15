@@ -63,6 +63,7 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = [
+            storitadIngest
             androidSdk
             pkgs.jdk17
             pkgs.gradle
