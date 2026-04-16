@@ -10,6 +10,7 @@ import android.os.IBinder
 import androidx.camera.core.Preview
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -23,8 +24,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -102,6 +105,10 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         }
     }
 
+    val view = LocalView.current
+    SideEffect { view.keepScreenOn = recording }
+    DisposableEffect(Unit) { onDispose { view.keepScreenOn = false } }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { c ->
@@ -110,37 +117,50 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                     preview.setSurfaceProvider(it.surfaceProvider)
                 }
             },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        if (zoom != 1f) recorder.pinchZoom(zoom)
+                    }
+                }
         )
 
-        // Top bar
-        Row(
-            Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = {
+        // Close — top-right (front camera cutout is top-left on this device)
+        IconButton(
+            onClick = {
                 if (recording) recorder.cancel()
                 onCancel()
-            }) { Icon(Icons.Filled.Close, contentDescription = "Cancel", tint = Color.White) }
+            },
+            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)
+        ) { Icon(Icons.Filled.Close, contentDescription = "Cancel", tint = Color.White) }
 
-            Spacer(Modifier.weight(1f))
-            if (recording) {
-                Surface(
-                    color = MaterialTheme.colorScheme.error,
-                    shape = CircleShape
-                ) {
-                    Text(
-                        formatElapsed(elapsed),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
-                }
+        // Timer chip — bottom-left, vertically centred on the record button
+        if (recording) {
+            Surface(
+                color = MaterialTheme.colorScheme.error,
+                shape = CircleShape,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 16.dp, bottom = 72.dp)
+            ) {
+                Text(
+                    formatElapsed(elapsed),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { if (!recording) useFront = !useFront }) {
-                Icon(Icons.Filled.Cameraswitch, contentDescription = "Flip", tint = Color.White)
-            }
+        }
+
+        // Camera-swap — bottom-right
+        IconButton(
+            onClick = { if (!recording) useFront = !useFront },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 64.dp)
+        ) {
+            Icon(Icons.Filled.Cameraswitch, contentDescription = "Flip", tint = Color.White)
         }
 
         // Record button

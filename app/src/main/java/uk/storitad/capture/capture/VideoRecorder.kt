@@ -3,6 +3,7 @@ package uk.storitad.capture.capture
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -23,6 +24,7 @@ class VideoRecorder(private val context: Context) {
     private var provider: ProcessCameraProvider? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var active: Recording? = null
+    private var camera: Camera? = null
     private var startedAtMs: Long = 0
     private var finalDurationMs: Long = 0
 
@@ -38,8 +40,16 @@ class VideoRecorder(private val context: Context) {
         val selector = if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA
                        else CameraSelector.DEFAULT_BACK_CAMERA
         p.unbindAll()
-        p.bindToLifecycle(owner, selector, preview, vc)
+        camera = p.bindToLifecycle(owner, selector, preview, vc)
         provider = p
+    }
+
+    fun pinchZoom(factor: Float) {
+        val cam = camera ?: return
+        val state = cam.cameraInfo.zoomState.value ?: return
+        val newRatio = (state.zoomRatio * factor)
+            .coerceIn(state.minZoomRatio, state.maxZoomRatio)
+        cam.cameraControl.setZoomRatio(newRatio)
     }
 
     @SuppressLint("MissingPermission")
@@ -68,9 +78,9 @@ class VideoRecorder(private val context: Context) {
 
     fun stop() { active?.stop(); active = null }
 
-    fun cancel() { active?.close(); active = null; provider?.unbindAll() }
+    fun cancel() { active?.close(); active = null; provider?.unbindAll(); camera = null }
 
-    fun unbind() { provider?.unbindAll(); provider = null; videoCapture = null }
+    fun unbind() { provider?.unbindAll(); provider = null; videoCapture = null; camera = null }
 
     private suspend fun awaitProvider(): ProcessCameraProvider =
         suspendCancellableCoroutine { cont ->

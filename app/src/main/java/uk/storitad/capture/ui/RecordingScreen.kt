@@ -22,6 +22,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
@@ -104,6 +105,10 @@ fun RecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             if (recorder != null) teardown()
         }
     }
+
+    val view = LocalView.current
+    SideEffect { view.keepScreenOn = recorder != null }
+    DisposableEffect(Unit) { onDispose { view.keepScreenOn = false } }
 
     Scaffold(topBar = {
         TopAppBar(title = { Text("Recording") }, navigationIcon = {
