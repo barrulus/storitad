@@ -18,4 +18,8 @@
     <string name="tags_label">Tags</string>
     <string name="notes_label">Notes</string>
     <string name="location_label">Location</string>
+    <string name="reminders_channel_name">Reminders</string>
+    <string name="reminders_channel_desc">Daily nudges to record a message</string>
+    <string name="reminder_title">Time to record</string>
+    <string name="reminder_body">Leave a message for someone you love.</string>
 </resources>
