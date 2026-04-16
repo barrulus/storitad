@@ -1,0 +1,213 @@
+#+title: Daily recording reminder — design
+#+date: [2026-04-16]
+#+status: approved, pre-implementation
+
+* Intent
+
+Add an on-device daily reminder that nudges the user to record a voice
+or video message. Fully local — no network, no push services, no
+Google Play Services. Survives reboots. Works on GrapheneOS with no
+special permissions or setup beyond what the app already declares.
+
+* Requirements
+
+- *Daily cadence* with two slots: evening primary + morning follow-up.
+- *Skip-if-done*: if the user has already recorded something today, the
+  evening reminder stays silent.
+- *Escalation*: if nothing was recorded in the last 24 h, the morning
+  slot fires as a follow-up.
+- *Configurable times*: user picks evening time and morning time in
+  Settings. Defaults: 20:00 and 09:00.
+- *Tap behaviour*: opens the app at Home. No jump-to-record.
+- *No notification action buttons* — just tap or swipe.
+- *No new user-granted permissions* beyond =POST_NOTIFICATIONS=, which
+  is already declared in the manifest.
+
+* Non-goals
+
+- Per-recipient rotation (e.g., "remind me about Griffin today"). Any
+  recording silences the reminder.
+- Streak-keeping or multi-day aggregation ("you haven't recorded in N
+  days").
+- Snooze / "skip today" notification actions.
+- Notification deep-link into the record screen.
+- Multiple reminders per day beyond the two fixed slots.
+- Scheduling precision tighter than WorkManager's typical ±10-min drift.
+
+* Architecture overview
+
+New package =uk.storitad.capture.reminders= containing four files:
+
+- =ReminderPrefs.kt= — SharedPreferences wrapper.
+- =ReminderScheduler.kt= — enqueue/cancel the periodic work.
+- =ReminderWorker.kt= — the =CoroutineWorker= that runs at each slot.
+- =ReminderNotification.kt= — channel setup + notification builder.
+
+Touch-points in existing code:
+
+- =ui/SettingsScreen.kt= — add a "Reminders" card above the recipients
+  list.
+- =MainActivity.onCreate= — idempotent call to
+  =ReminderScheduler.reschedule(this)= if prefs say enabled, to
+  self-heal if WorkManager ever loses the enqueued work.
+
+No changes to =AndroidManifest.xml= (all required perms already
+declared). No new Gradle dependencies (WorkManager is already used by
+=TranscribeWorker=).
+
+* Components
+
+** ReminderPrefs
+
+Thin wrapper over =SharedPreferences= with three fields:
+
+| key              | type    | default     |
+|------------------+---------+-------------|
+| enabled          | Boolean | false       |
+| eveningMinutes   | Int     | 20*60 (20:00) |
+| morningMinutes   | Int     | 9*60  (09:00) |
+
+Times stored as minutes-of-day (0–1439) for cheap comparison and no
+=LocalTime= serialisation concerns. Exposes typed accessors
+=eveningTime: LocalTime= and =morningTime: LocalTime= for callers.
+
+** ReminderScheduler
+
+Object with two public functions:
+
+- =reschedule(context: Context)= — cancels existing work and enqueues
+  two unique =PeriodicWorkRequest= instances with names
+  =reminder-evening= and =reminder-morning=, each with period 24 h and
+  =setInitialDelay= computed as "duration until next occurrence of the
+  target time in the system timezone." Uses
+  =ExistingPeriodicWorkPolicy.UPDATE= so re-calling replaces cleanly.
+- =cancelAll(context: Context)= — cancels both unique works.
+
+Pure helper, unit-testable with a fake clock:
+
+#+begin_src kotlin
+fun computeInitialDelay(now: ZonedDateTime, target: LocalTime): Duration {
+    val todayTarget = now.with(target)
+    val next = if (todayTarget.isAfter(now)) todayTarget else todayTarget.plusDays(1)
+    return Duration.between(now, next)
+}
+#+end_src
+
+** ReminderWorker
+
+=CoroutineWorker=. Input data: =slot= = =evening= or =morning=.
+
+Flow:
+
+1. If =ReminderPrefs.enabled= is false, return =Result.success()= —
+   no-op. (Belt-and-braces; cancel should have removed the work, but
+   guard anyway.)
+2. Check "recorded recently":
+   - Evening slot: any file in the inbox with today's =YYYYMMDD=
+     prefix in the system timezone.
+   - Morning slot: any file with =lastModified() >= now - 24h=.
+3. If nothing found, post the notification via =ReminderNotification=.
+4. Return =Result.success()=.
+
+The inbox path comes from the existing =FileManager= — do not hardcode.
+
+** ReminderNotification
+
+- Creates (idempotently) a notification channel with id =reminders=,
+  name "Reminders", importance =IMPORTANCE_DEFAULT= (vibrate, no
+  alarm-style sound).
+- Builds the notification:
+  - Title: "Time to record"
+  - Body: "Leave a message for someone you love."
+  - Small icon: reuse =ic_launcher_foreground= or existing notification
+    icon.
+  - Content intent: =PendingIntent= to =MainActivity= with
+    =FLAG_ACTIVITY_CLEAR_TOP | FLAG_ACTIVITY_SINGLE_TOP=.
+  - =setAutoCancel(true)=.
+  - No action buttons.
+- Two notification IDs — one per slot — so the morning notification
+  replaces the evening one rather than stacking.
+
+* Settings UI
+
+Extend =SettingsScreen= (rename TopAppBar from "Recipients" to
+"Settings"). Layout:
+
+1. *Reminders* card (new, at top):
+   - Row 1: Switch "Daily recording reminder" bound to
+     =ReminderPrefs.enabled=.
+   - Row 2: Time row "Evening nudge" — tap opens a Material3
+     =TimePicker= dialog, writes =eveningMinutes=.
+   - Row 3: Time row "Morning follow-up" — same, writes
+     =morningMinutes=.
+   - Rows 2 & 3 disabled (greyed) when the switch is off.
+2. *Recipients* card (existing).
+
+Any change in this card calls =ReminderScheduler.reschedule(context)=
+(or =cancelAll= when flipping to off).
+
+* Permission flow
+
+=POST_NOTIFICATIONS= is already declared in the manifest. It needs a
+runtime prompt on Android 13+. Flow when the user toggles the switch
+ON:
+
+1. Check =Build.VERSION.SDK_INT >= TIRAMISU= and
+   =ContextCompat.checkSelfPermission(...)=.
+2. If not granted: launch
+   =ActivityResultContracts.RequestPermission=.
+   - On grant: set =enabled=true=, call =reschedule=.
+   - On deny: keep =enabled=false=, show inline helper
+     text "Notifications permission is required for reminders."
+3. If granted already or pre-Tiramisu: set =enabled=true=, call
+   =reschedule=.
+
+No =SCHEDULE_EXACT_ALARM=. No =RECEIVE_BOOT_COMPLETED=.
+
+* Edge cases
+
+- *Reboot*: WorkManager persists enqueued work to its own database;
+  re-enqueues itself on boot. No receiver needed.
+- *App updated via Obtainium*: SharedPreferences and WorkManager state
+  survive in-place updates. =MainActivity.onCreate= idempotently
+  re-schedules as a safety net.
+- *User changes time in Settings*:
+  =ExistingPeriodicWorkPolicy.UPDATE= on reschedule replaces the old
+  work cleanly.
+- *DST / timezone change*: initial delay is computed in system zone;
+  next fire self-aligns. Worst case is one reminder off by an hour on
+  the transition day.
+- *Doze*: WorkManager defers through doze gracefully; a nudge may
+  arrive a few minutes late, which is fine.
+- *Per-app Network off* (GrapheneOS default): feature is fully local,
+  no impact.
+- *First-run after install*: =enabled= defaults to false, so the
+  feature is opt-in from Settings. No surprise notifications.
+
+* Testing
+
+Unit tests (no WorkManager needed):
+
+- =ReminderPrefs=: round-trip defaults and writes.
+- =ReminderScheduler.computeInitialDelay=: target-today-future,
+  target-today-past-so-tomorrow, midnight-crossing, DST spring-forward
+  day.
+- "Recorded today?" predicate against a synthetic list of =File=
+  fixtures (today's prefix / yesterday's prefix / modified within 24 h
+  / older).
+
+Integration / manual smoke test:
+
+1. Set evening time to =now + 2 min= in Settings.
+2. Close app. Wait.
+3. Notification fires; tap opens Home.
+4. Record an entry. Advance time to the next evening slot.
+5. Verify no notification fires (skip-if-done works).
+6. Repeat but without recording; verify morning slot fires.
+
+* Out of scope / future
+
+- Per-recipient nudges ("you haven't recorded for Griffin in a week").
+- Smart times based on past recording patterns.
+- Week-view in History screen showing reminder fires vs actual
+  recordings.
