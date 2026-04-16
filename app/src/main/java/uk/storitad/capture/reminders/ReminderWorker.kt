@@ -21,7 +21,9 @@ class ReminderWorker(
         val slot = inputData.getString(ReminderScheduler.KEY_SLOT)
             ?: ReminderScheduler.SLOT_EVENING
 
-        val files = FileManager.inboxDir(ctx).listFiles()?.toList().orEmpty()
+        val files = FileManager.inboxDir(ctx).listFiles()
+            ?.filter { it.extension.lowercase() in setOf("m4a", "mp4") }
+            .orEmpty()
 
         val alreadyRecorded = when (slot) {
             ReminderScheduler.SLOT_EVENING ->
