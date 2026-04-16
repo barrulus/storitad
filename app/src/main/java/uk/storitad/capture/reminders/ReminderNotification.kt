@@ -43,7 +43,7 @@ object ReminderNotification {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val notif = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(context.getString(R.string.reminder_title))
             .setContentText(context.getString(R.string.reminder_body))
             .setAutoCancel(true)
