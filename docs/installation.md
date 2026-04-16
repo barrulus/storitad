@@ -1,15 +1,17 @@
 # Installation
 
 Two machines to set up: the **phone** (GrapheneOS) and the **desktop**
-that ingests the recordings. You don't have to do the phone side if
-someone else is handing you an APK.
+that ingests the recordings. You can do just the phone side if you only
+want to capture — signed APKs are published on every tagged release and
+Obtainium handles install + updates (see [§3](#3-install-the-phone-app)).
 
 ## Requirements
 
 ### Phone
 - GrapheneOS device. Built on Pixel 9 Pro; other Pixels should work.
-- Developer options + USB debugging enabled, at least for the first
-  install and for later ingest pulls.
+- Developer options + USB debugging enabled *if* you want to build from
+  source or let the desktop ingest pull recordings over USB. Not needed
+  for an Obtainium-only install.
 
 ### Desktop
 - Linux or macOS. Windows is untested; WSL would need [Nix] installed
@@ -69,6 +71,38 @@ see [Android SDK below](#android-sdk-for-manual-installs) if you need it.
 
 ## 3. Install the phone app
 
+Two paths: **Obtainium** (recommended — handles updates automatically)
+or **build from source** (for development).
+
+### Option A — Obtainium (recommended)
+
+You do not need the Nix devshell, the source checkout, or USB debugging
+for this path — sections 1 and 2 are only required if you also want to
+ingest recordings on a desktop.
+
+1. Install [Obtainium](https://github.com/ImranR98/Obtainium) on the
+   phone. Get its APK from its own [GitHub Releases page], or install
+   it via the [IzzyOnDroid F-Droid repo].
+2. In Obtainium tap **Add App** and paste:
+   ```
+   https://github.com/barrulus/storitad
+   ```
+   Obtainium will find the latest signed `storitad-v*.apk` attached to
+   that repo's Releases and offer to install it.
+3. GrapheneOS will prompt once to allow Obtainium to install unknown
+   apps — accept. From then on, Obtainium checks for new Storitad
+   releases and installs updates with a single tap.
+
+Releases are cut manually by tagging `vX.Y.Z` on `main`, so updates
+arrive when a tag is pushed, not on a fixed cadence. Enable Obtainium's
+background update check if you want to be notified.
+
+The release APK is signed with a stable key that will not rotate. If the
+signing key ever had to change, you'd need to uninstall and reinstall
+(Android refuses upgrades with a new signer) — but that is not planned.
+
+### Option B — build from source
+
 With the Pixel plugged in and USB debugging on:
 
 ```bash
@@ -78,6 +112,8 @@ With the Pixel plugged in and USB debugging on:
 The app installs as `Storitad`. Open it, grant mic/camera permissions
 when asked, and record something.
 
+### After install (both paths)
+
 **GrapheneOS network note:** sideloaded apps have the per-app *Network*
 toggle **off** by default. Only flip it on (`Settings → Apps → Storitad
 → Network`) if you want to use the phone's built-in Transcribe button
@@ -86,6 +122,9 @@ on server-side `small.en` transcription, leave Network off — the app
 works fine.
 
 See [Phone app guide](phone-app.md) for permissions and day-to-day use.
+
+[GitHub Releases page]: https://github.com/ImranR98/Obtainium/releases
+[IzzyOnDroid F-Droid repo]: https://apt.izzysoft.de/fdroid/index/apk/dev.imranr.obtainium
 
 ## 4. First-run ingest setup
 

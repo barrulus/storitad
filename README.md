@@ -36,17 +36,33 @@ any browser.
 
 ## Quick start
 
+### Phone app
+
+Install [Obtainium](https://github.com/ImranR98/Obtainium), tap **Add
+App**, and paste:
+
+```
+https://github.com/barrulus/storitad
+```
+
+Obtainium picks up the signed APK from the latest [GitHub Release] and
+handles updates from then on. No source checkout, no USB debugging.
+
+### Desktop ingest
+
 ```bash
 git clone https://github.com/barrulus/storitad.git
 cd storitad
 git submodule update --init --recursive
 nix develop                      # or `direnv allow`
-./gradlew :app:installDebug      # install phone app (Pixel plugged in)
 nix run .#                       # pull, transcribe, render, open browser
 ```
 
 Then `Record` on the phone → plug in → `nix run .#` → browse. That's the
-loop.
+loop. (To build the phone app from source instead of Obtainium, run
+`./gradlew :app:installDebug` with the Pixel plugged in.)
+
+[GitHub Release]: https://github.com/barrulus/storitad/releases
 
 ## Documentation
 
