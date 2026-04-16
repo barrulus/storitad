@@ -25,6 +25,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val quickVoice = intent?.action == "uk.storitad.capture.action.QUICK_VOICE"
+        uk.storitad.capture.reminders.ReminderNotification.ensureChannel(this)
+        if (uk.storitad.capture.reminders.ReminderPrefs(this).enabled) {
+            uk.storitad.capture.reminders.ReminderScheduler.reschedule(this)
+        }
         setContent { StoritadTheme { App(startOnRecording = quickVoice) } }
     }
 }
