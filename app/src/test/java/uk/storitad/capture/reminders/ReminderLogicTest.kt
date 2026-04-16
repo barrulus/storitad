@@ -9,6 +9,7 @@ import org.junit.rules.TemporaryFolder
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
 
@@ -44,6 +45,17 @@ class ReminderLogicTest {
         val now = ZonedDateTime.of(2026, 4, 16, 23, 30, 0, 0, ZoneOffset.UTC)
         val delay = computeInitialDelay(now, LocalTime.of(0, 15))
         assertEquals(Duration.ofMinutes(45), delay)
+    }
+
+    @Test
+    fun `dst spring-forward still produces a sensible delay`() {
+        // In US/Eastern on 2026-03-08, clocks jump from 02:00 to 03:00.
+        val zone = java.time.ZoneId.of("America/New_York")
+        val now = java.time.ZonedDateTime.of(2026, 3, 8, 1, 30, 0, 0, zone)
+        val delay = computeInitialDelay(now, java.time.LocalTime.of(20, 0))
+        // Wall-clock 01:30 → 20:00 same day = 18.5h of wall time, but because
+        // 02:00–03:00 is skipped, elapsed duration is 17.5h.
+        assertEquals(java.time.Duration.ofMinutes(17 * 60 + 30), delay)
     }
 
     // --- hasFilenameForDate ---
