@@ -2,6 +2,7 @@ package uk.storitad.capture.capture
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -53,6 +54,13 @@ class VideoRecorder(private val context: Context) {
             .start(executor) { event ->
                 if (event is VideoRecordEvent.Finalize) {
                     finalDurationMs = System.currentTimeMillis() - startedAtMs
+                    if (event.hasError()) {
+                        Log.w(TAG,
+                            "recording finalised with error code=${event.error} " +
+                            "duration=${finalDurationMs}ms cause=${event.cause}")
+                    } else {
+                        Log.i(TAG, "recording finalised cleanly duration=${finalDurationMs}ms")
+                    }
                     onFinalised(finalDurationMs)
                 }
             }
@@ -72,4 +80,6 @@ class VideoRecorder(private val context: Context) {
                     .onFailure { cont.cancel(it) }
             }, ContextCompat.getMainExecutor(context))
         }
+
+    companion object { private const val TAG = "VideoRecorder" }
 }
