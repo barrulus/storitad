@@ -46,7 +46,14 @@ footer.metadata dd { margin: 0 }
 .stat .k { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em }
 .stat .v { font-size: 1.25rem; font-weight: 600 }
 .timeline { margin: 16px 0 }
-.timeline svg { width: 100%; height: 180px; display: block }
+.timeline .bars { display: flex; align-items: flex-end; gap: 8px; padding: 0 4px 8px; border-bottom: 1px solid var(--border) }
+.timeline .bar-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center }
+.timeline .bar-count { font-size: .75rem; color: var(--fg); height: 1.1em; line-height: 1 }
+.timeline .bar-stack { width: 100%; max-width: 48px; height: 140px; display: flex; flex-direction: column; justify-content: flex-end; margin-top: 4px }
+.timeline .bar { width: 100%; border-radius: 2px 2px 0 0 }
+.timeline .bar-voice { background: var(--primary) }
+.timeline .bar-video { background: var(--muted); opacity: .6 }
+.timeline .bar-label { font-size: .7rem; color: var(--muted); margin-top: 6px; white-space: nowrap }
 .legend { display: flex; gap: 16px; font-size: .85rem; color: var(--muted); margin-top: 8px }
 .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle }
 .kv-list { display: grid; grid-template-columns: 1fr max-content; gap: 4px 16px; font-size: .95rem }

@@ -30,27 +30,23 @@
 
         <h2>Entries per month</h2>
         <div class="timeline">
-          {# Inline SVG bar chart — voice stacked on video. viewBox width = months*20, height=100 body + 20 label. #}
           {% set peak = months|map(attribute='total')|max %}
-          {% set w = months|length * 24 %}
-          <svg viewBox="0 0 {{ w }} 140" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <div class="bars">
             {% for b in months %}
-              {% set x = loop.index0 * 24 + 2 %}
-              {% set total_h = 100 * (b.total / peak) if peak else 0 %}
-              {% set video_h = 100 * (b.video / peak) if peak else 0 %}
-              {% set voice_h = total_h - video_h %}
-              {% if b.video > 0 %}
-                <rect x="{{ x }}" y="{{ 110 - total_h }}" width="20" height="{{ video_h }}" fill="var(--muted)" opacity="0.6"/>
-              {% endif %}
-              {% if b.voice > 0 %}
-                <rect x="{{ x }}" y="{{ 110 - voice_h }}" width="20" height="{{ voice_h }}" fill="var(--primary)"/>
-              {% endif %}
-              {% if b.total > 0 %}
-                <text x="{{ x + 10 }}" y="{{ 108 - total_h }}" font-size="8" text-anchor="middle" fill="var(--fg)">{{ b.total }}</text>
-              {% endif %}
-              <text x="{{ x + 10 }}" y="124" font-size="8" text-anchor="middle" fill="var(--muted)">{{ b.label }}</text>
+              <div class="bar-col" title="{{ b.label }}: {{ b.voice }} voice, {{ b.video }} video">
+                <div class="bar-count">{% if b.total > 0 %}{{ b.total }}{% endif %}</div>
+                <div class="bar-stack">
+                  {% if b.video > 0 %}
+                    <div class="bar bar-video" style="height: {{ (100 * b.video / peak)|round(2) }}%"></div>
+                  {% endif %}
+                  {% if b.voice > 0 %}
+                    <div class="bar bar-voice" style="height: {{ (100 * b.voice / peak)|round(2) }}%"></div>
+                  {% endif %}
+                </div>
+                <div class="bar-label">{{ b.label }}</div>
+              </div>
             {% endfor %}
-          </svg>
+          </div>
           <div class="legend">
             <span><span class="sw" style="background:var(--primary)"></span>Voice</span>
             <span><span class="sw" style="background:var(--muted);opacity:.6"></span>Video</span>
