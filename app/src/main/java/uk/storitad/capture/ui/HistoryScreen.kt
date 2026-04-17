@@ -18,6 +18,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import uk.storitad.capture.metadata.EntryMetadata
@@ -156,7 +157,7 @@ private data class HistoryStats(
     val avgSeconds: Long,
     val longestSeconds: Long,
     val shortestSeconds: Long,
-    val months: List<MonthBucket>,          // oldest → newest, trimmed to last 12 non-empty+empty span
+    val months: List<MonthBucket>,          // oldest → newest, exactly 12 trailing months anchored to today
     val recipients: List<Pair<String, Int>>, // sorted desc by count
     val tags: List<Pair<String, Int>>        // sorted desc by count, top 10
 )
@@ -181,20 +182,18 @@ private fun computeStats(entries: List<EntryMetadata>): HistoryStats {
         if (it.mediaType == MediaType.VOICE) arr[0]++ else arr[1]++
     }
 
-    // Dense month span: fill gaps between earliest and latest month so the bar
-    // chart actually shows trend (empty months read as absence, not noise).
-    val sortedKeys = byMonth.keys.sortedWith(compareBy({ it.first }, { it.second }))
-    val first = sortedKeys.first()
-    val last = sortedKeys.last()
+    // Always render the trailing 12 months anchored to today so the axis is
+    // stable — 1–2 months of data look like quiet stretches, not a single
+    // full-width bar.
+    val now = Clock.System.now().toLocalDateTime(TimeZone.UTC)
+    var y = now.year; var m = now.monthNumber
+    repeat(11) { m--; if (m < 1) { m = 12; y-- } }
     val months = mutableListOf<MonthBucket>()
-    var y = first.first; var m = first.second
-    while (y < last.first || (y == last.first && m <= last.second)) {
+    repeat(12) {
         val arr = byMonth[y to m] ?: intArrayOf(0, 0)
         months += MonthBucket(y, m, arr[0], arr[1])
         m++; if (m > 12) { m = 1; y++ }
     }
-    // Cap to trailing 12 months for legibility.
-    val trimmed = if (months.size > 12) months.takeLast(12) else months
 
     val recipientCounts = entries.flatMap { it.recipients }
         .groupingBy { it }.eachCount()
@@ -209,7 +208,7 @@ private fun computeStats(entries: List<EntryMetadata>): HistoryStats {
         total = entries.size, voice = voice, video = video,
         totalSeconds = total, avgSeconds = avg,
         longestSeconds = longest, shortestSeconds = shortest,
-        months = trimmed, recipients = recipientCounts, tags = tagCounts
+        months = months, recipients = recipientCounts, tags = tagCounts
     )
 }
 
@@ -286,6 +285,11 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
     }
 }
 
+private val monthShortNames = arrayOf(
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+)
+
 @Composable
 private fun TimelineCard(s: HistoryStats) {
     val peak = max(1, s.months.maxOf { it.total })
@@ -293,52 +297,66 @@ private fun TimelineCard(s: HistoryStats) {
     Card {
         Column(Modifier.padding(16.dp)) {
             Text("Entries per month", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Text("voice + video, last ${s.months.size} months", style = MaterialTheme.typography.labelSmall)
+            Text("voice + video, last 12 months", style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.height(12.dp))
             Row(
-                modifier = Modifier.fillMaxWidth().height(barMaxHeight + 28.dp),
+                modifier = Modifier.fillMaxWidth().height(barMaxHeight + 16.dp),
                 verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 s.months.forEach { b ->
                     Column(
                         modifier = Modifier.weight(1f),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text(b.total.toString(), style = MaterialTheme.typography.labelSmall)
-                        Box(
-                            modifier = Modifier.fillMaxWidth()
-                                .height(barMaxHeight * (b.total.toFloat() / peak).coerceAtLeast(0.02f))
-                                .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                        ) {
-                            Column(Modifier.fillMaxSize()) {
-                                if (b.video > 0) {
-                                    Box(
-                                        Modifier.fillMaxWidth()
-                                            .weight(b.video.toFloat())
-                                            .background(MaterialTheme.colorScheme.secondary)
-                                    )
-                                }
-                                if (b.voice > 0) {
-                                    Box(
-                                        Modifier.fillMaxWidth()
-                                            .weight(b.voice.toFloat())
-                                            .background(MaterialTheme.colorScheme.primary)
-                                    )
+                        Text(
+                            if (b.total > 0) b.total.toString() else "",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        if (b.total > 0) {
+                            Box(
+                                modifier = Modifier.fillMaxWidth()
+                                    .height(barMaxHeight * (b.total.toFloat() / peak).coerceAtLeast(0.06f))
+                                    .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                            ) {
+                                Column(Modifier.fillMaxSize()) {
+                                    if (b.video > 0) {
+                                        Box(
+                                            Modifier.fillMaxWidth()
+                                                .weight(b.video.toFloat())
+                                                .background(MaterialTheme.colorScheme.secondary)
+                                        )
+                                    }
+                                    if (b.voice > 0) {
+                                        Box(
+                                            Modifier.fillMaxWidth()
+                                                .weight(b.voice.toFloat())
+                                                .background(MaterialTheme.colorScheme.primary)
+                                        )
+                                    }
                                 }
                             }
+                        } else {
+                            // Baseline tick so empty months still register as a column.
+                            Box(
+                                modifier = Modifier.fillMaxWidth(0.6f)
+                                    .height(2.dp)
+                                    .background(MaterialTheme.colorScheme.outlineVariant)
+                            )
                         }
                     }
                 }
             }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 s.months.forEach { b ->
                     Text(
-                        "%02d".format(b.month),
+                        // Show year on January so the 12-month span reads clearly.
+                        if (b.month == 1) "Jan\n${b.year % 100}" else monthShortNames[b.month - 1],
                         style = MaterialTheme.typography.labelSmall,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         modifier = Modifier.weight(1f)
                     )
                 }
