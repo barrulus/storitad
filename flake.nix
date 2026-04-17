@@ -43,6 +43,7 @@
           nativeBuildInputs = [ pkgs.makeWrapper ];
           postFixup = ''
             wrapProgram $out/bin/storitad-pull \
+              --unset PYTHONPATH \
               --prefix PATH : ${pkgs.lib.makeBinPath [
                 pkgs.whisper-cpp
                 pkgs.ffmpeg-headless
