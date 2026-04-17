@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -195,7 +196,13 @@ def render(archive_root: Path, recipient_emoji: dict[str, str] | None = None,
         media_src = md.with_name(fm.get("media") or "")
         media_name = fm.get("media") or ""
         if media_src.exists():
-            shutil.copy2(media_src, out_dir / media_name)
+            # Symlink rather than copy — the canonical media lives under
+            # `entries/`, so duplicating it into the rendered site just wastes
+            # disk (2× for every audio/video). `http.server` follows symlinks,
+            # and `rsync -a` preserves them as links in backups.
+            link = out_dir / media_name
+            rel_target = os.path.relpath(media_src, start=out_dir)
+            link.symlink_to(rel_target)
 
         chips = _chips(fm, emoji)
         loc = fm.get("location")
