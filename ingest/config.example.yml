@@ -16,14 +16,14 @@ whisper_model_name: whisper-small.en
 transport: adb
 
 # After a successful sync, what to do with items on the phone:
-#   quota        — keep media + sidecar on phone until total inbox > quota_gb,
-#                  then delete oldest already-synced items (this is the default;
-#                  buys you offline replay while still capping phone storage)
-#   remove_all   — delete media + sidecar from the phone immediately
 #   remove_media — keep the sidecar JSON (pushed back with processed=true so
-#                  the phone archives it), delete only the media blob
+#                  the phone archives it), delete only the media blob (default)
+#   remove_all   — delete media + sidecar from the phone immediately
+#   quota        — keep media + sidecar on phone until total inbox > quota_gb,
+#                  then delete oldest already-synced items; buys you offline
+#                  replay on-device while still capping phone storage
 cleanup:
-  mode: quota
+  mode: remove_media
   quota_gb: 5
 
 aliases_file: ~/.config/storitad/aliases.yml

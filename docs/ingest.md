@@ -67,8 +67,9 @@ storitad-pull serve --edit   # see docs/server.md
 ```
 
 Only `entries/` needs backing up. `site/` is a pure rebuild artefact.
-`processed/` is a local log of what's been ingested (used by the quota
-cleanup mode).
+`processed/` is a local log of what's been ingested — used by the
+`quota` cleanup mode to pick eviction candidates, and by every mode to
+skip already-ingested items on re-pull.
 
 ## Cleanup modes
 
@@ -76,25 +77,27 @@ Configured under `cleanup:` in `~/.config/storitad/config.yml`:
 
 ```yaml
 cleanup:
-  mode: quota         # quota | remove_all | remove_media
-  quota_gb: 5
+  mode: remove_media  # remove_media | remove_all | quota
+  quota_gb: 5         # only relevant for quota mode
 ```
 
 | Mode | What happens per item | End-of-batch |
 |------|-----------------------|--------------|
-| `quota` (default) | Leave phone files alone; push sidecar back with `processed=true` so the phone's UI can badge it as synced. | Measure phone inbox; if over `quota_gb`, `adb shell rm` oldest synced items (sidecar + media) until under. |
+| `remove_media` (default) | Push sidecar back with `processed=true`; `adb shell rm` only the media blob. | No-op. |
 | `remove_all` | `adb shell rm` both the media and the sidecar from the phone's inbox immediately. | No-op. |
-| `remove_media` | Push sidecar back with `processed=true`; `adb shell rm` only the media blob. | No-op. |
+| `quota` | Leave phone files alone; push sidecar back with `processed=true` so the phone's UI can badge it as synced. | Measure phone inbox; if over `quota_gb`, `adb shell rm` oldest synced items (sidecar + media) until under. |
 
 Every mode also archives the staged sidecar locally to
 `~/journal/processed/YYYY/MM/` — that's how `quota` knows which phone
-inbox items are safe to evict. An interrupted sync therefore **cannot**
-delete unsynced media from the phone.
+inbox items are safe to evict, and how re-pulls skip items that have
+already been ingested. An interrupted sync therefore **cannot** delete
+unsynced media from the phone.
 
-Pick `remove_all` if you want the phone to aggressively free space.
-Pick `remove_media` if you want the phone to keep a JSON breadcrumb of
-what it's sent. Pick `quota` (default) if you want offline replay
-on-device for a while, with a hard cap on phone storage.
+Pick `remove_media` (default) if you want the phone to free the big
+media blobs while keeping a JSON breadcrumb of what it's sent.
+Pick `remove_all` if you want the phone to aggressively free
+everything. Pick `quota` if you want offline replay on-device for a
+while, with a hard cap on phone storage.
 
 ## Configuration
 
@@ -111,7 +114,7 @@ whisper_model_name: whisper-small.en
 transport: adb
 
 cleanup:
-  mode: quota
+  mode: remove_media
   quota_gb: 5
 
 aliases_file: ~/.config/storitad/aliases.yml

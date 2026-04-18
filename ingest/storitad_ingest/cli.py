@@ -21,7 +21,7 @@ DEFAULT_ALIASES = Path.home() / ".config" / "storitad" / "aliases.yml"
 
 @dataclass
 class CleanupConfig:
-    mode: str = "quota"          # quota | remove_all | remove_media
+    mode: str = "remove_media"   # quota | remove_all | remove_media
     quota_gb: float = 5.0
 
 
@@ -105,6 +105,37 @@ def process_pair(sidecar_path: Path, media_path: Path, cfg: Config, alias_map: d
         click.echo(f"  cleanup skipped: {e}", err=True)
 
     return md
+
+
+def _reconcile_phone_state(sidecar_path: Path, cfg: Config) -> None:
+    """Apply the current cleanup mode's per-item action to an already-
+    ingested item the phone still holds. Lets a mode change (e.g.
+    quota → remove_media) actually reach the phone without a re-ingest."""
+    import json
+    raw = json.loads(sidecar_path.read_text())
+    media_name = raw.get("mediaFile")
+    mode = cfg.cleanup.mode
+    if mode == "remove_all":
+        pull.phone_rm(sidecar_path.name, *( [media_name] if media_name else [] ))
+    elif mode == "remove_media" and media_name:
+        pull.phone_rm(media_name)
+    # quota: keep phone files; end-of-batch evictor handles the cap.
+
+
+def _already_ingested(sidecar_path: Path, cfg: Config) -> bool:
+    """True iff this sidecar has already been archived locally. The
+    archive path is only written after a successful render, so it's the
+    canonical 'done' marker — checking it makes re-pulls idempotent when
+    cleanup leaves items on the phone (e.g. quota mode under threshold)."""
+    import json
+    from datetime import datetime, timezone
+    try:
+        raw = json.loads(sidecar_path.read_text())
+        dt = datetime.fromisoformat(raw["capturedAt"].replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return False
+    archived = cfg.archive_root / "processed" / f"{dt.year:04d}" / f"{dt.month:02d}" / sidecar_path.name
+    return archived.exists()
 
 
 def _archive_processed(sidecar_path: Path, sc, cfg: Config) -> None:
@@ -249,6 +280,13 @@ def pull_cmd(ctx: click.Context, transport: str | None, staging: Path | None, dr
 
         for j, m in result.pairs:
             if entry_id and j.stem != entry_id:
+                continue
+            if not entry_id and _already_ingested(j, cfg):
+                click.echo(f"Skipping {j.name} (already ingested)")
+                try:
+                    _reconcile_phone_state(j, cfg)
+                except Exception as e:
+                    click.echo(f"  phone cleanup skipped: {e}", err=True)
                 continue
             click.echo(f"Processing {j.name}")
             try:
