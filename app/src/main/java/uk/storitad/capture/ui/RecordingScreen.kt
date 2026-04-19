@@ -8,8 +8,11 @@ import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -18,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -69,7 +73,7 @@ fun RecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) {
+    fun startRecording() {
         val zone = TimeZone.currentSystemDefault()
         val now = Clock.System.now()
         val base = FileManager.basename(now, zone, "voice")
@@ -116,7 +120,7 @@ fun RecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     DisposableEffect(Unit) { onDispose { view.keepScreenOn = false } }
 
     Scaffold(topBar = {
-        TopAppBar(title = { Text("Recording") }, navigationIcon = {
+        TopAppBar(title = { Text(if (recorder == null) "Voice" else "Recording") }, navigationIcon = {
             TextButton(onClick = {
                 teardown()
                 DraftHolder.clear()
@@ -124,66 +128,101 @@ fun RecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             }) { Text("Cancel") }
         })
     }) { pad ->
-        Column(
-            Modifier.padding(pad).fillMaxSize().padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Surface(
-                color = if (paused) MaterialTheme.colorScheme.surfaceVariant
-                        else MaterialTheme.colorScheme.errorContainer,
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(999.dp)
+        if (recorder == null) {
+            Column(
+                Modifier.padding(pad).fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(
-                    if (paused) "PAUSED" else "RECORDING",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (paused) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onErrorContainer,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                )
-            }
-            Text(formatElapsed(elapsed), style = MaterialTheme.typography.displayLarge)
-
-            Waveform(amps = amps, Modifier.fillMaxWidth().height(72.dp))
-
-            Spacer(Modifier.weight(1f))
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedButton(
-                    onClick = {
-                        val r = recorder ?: return@OutlinedButton
-                        if (paused) { r.resume(); paused = false }
-                        else { r.pause(); paused = true }
-                    },
-                    modifier = Modifier.weight(1f).height(64.dp)
+                Spacer(Modifier.weight(1f))
+                Box(
+                    Modifier
+                        .size(120.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error)
                 ) {
-                    Icon(if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (paused) "Resume" else "Pause")
+                    IconButton(
+                        onClick = { startRecording() },
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Icon(
+                            Icons.Filled.FiberManualRecord,
+                            contentDescription = "Start recording",
+                            tint = Color.White,
+                            modifier = Modifier.size(56.dp)
+                        )
+                    }
                 }
-                Button(
-                    onClick = {
-                        val r = recorder ?: return@Button
-                        val durationMs = r.stop()
-                        recorder = null
-                        runCatching { ctx.unbindService(conn) }
-                        ctx.stopService(Intent(ctx, RecordingService::class.java))
-                        val b = basename ?: return@Button
-                        DraftHolder.finalise(durationMs)
-                        onStopped(b)
-                    },
-                    modifier = Modifier.weight(1f).height(64.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Tap to record",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.weight(1f))
+            }
+        } else {
+            Column(
+                Modifier.padding(pad).fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Surface(
+                    color = if (paused) MaterialTheme.colorScheme.surfaceVariant
+                            else MaterialTheme.colorScheme.errorContainer,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(999.dp)
                 ) {
-                    Icon(Icons.Filled.Stop, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Stop")
+                    Text(
+                        if (paused) "PAUSED" else "RECORDING",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (paused) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
+                Text(formatElapsed(elapsed), style = MaterialTheme.typography.displayLarge)
+
+                Waveform(amps = amps, Modifier.fillMaxWidth().height(72.dp))
+
+                Spacer(Modifier.weight(1f))
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val r = recorder ?: return@OutlinedButton
+                            if (paused) { r.resume(); paused = false }
+                            else { r.pause(); paused = true }
+                        },
+                        modifier = Modifier.weight(1f).height(64.dp)
+                    ) {
+                        Icon(if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (paused) "Resume" else "Pause")
+                    }
+                    Button(
+                        onClick = {
+                            val r = recorder ?: return@Button
+                            val durationMs = r.stop()
+                            recorder = null
+                            runCatching { ctx.unbindService(conn) }
+                            ctx.stopService(Intent(ctx, RecordingService::class.java))
+                            val b = basename ?: return@Button
+                            DraftHolder.finalise(durationMs)
+                            onStopped(b)
+                        },
+                        modifier = Modifier.weight(1f).height(64.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Icon(Icons.Filled.Stop, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Stop")
+                    }
                 }
             }
         }
