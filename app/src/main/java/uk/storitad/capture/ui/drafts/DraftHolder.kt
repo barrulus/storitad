@@ -2,6 +2,7 @@ package uk.storitad.capture.ui.drafts
 
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
+import uk.storitad.capture.metadata.GeoFix
 import java.io.File
 
 object DraftHolder {
@@ -10,7 +11,8 @@ object DraftHolder {
         val capturedAt: Instant,
         val timezone: TimeZone,
         val mediaFile: File,
-        var durationMs: Long = 0
+        var durationMs: Long = 0,
+        var locationFix: GeoFix? = null,
     )
 
     @Volatile private var current: Draft? = null
@@ -21,12 +23,18 @@ object DraftHolder {
 
     fun finalise(durationMs: Long) { current?.durationMs = durationMs }
 
+    fun setLocationFix(fix: GeoFix) { current?.locationFix = fix }
+
     fun get(): Draft? = current
 
     fun clear() {
+        DraftLocationJob.cancel()
         current?.mediaFile?.takeIf { it.exists() }?.delete()
         current = null
     }
 
-    fun consume() { current = null }
+    fun consume() {
+        DraftLocationJob.cancel()
+        current = null
+    }
 }
