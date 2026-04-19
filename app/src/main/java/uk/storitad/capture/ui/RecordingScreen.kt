@@ -32,8 +32,10 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import uk.storitad.capture.capture.AudioRecorder
 import uk.storitad.capture.capture.RecordingService
+import uk.storitad.capture.settings.CaptureSettings
 import uk.storitad.capture.storage.FileManager
 import uk.storitad.capture.ui.drafts.DraftHolder
+import uk.storitad.capture.ui.drafts.DraftLocationJob
 import java.io.File
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -78,6 +80,9 @@ fun RecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         recorder = r
         basename = base
         DraftHolder.begin(base, now, zone, mediaFile)
+        if (CaptureSettings(ctx).autoAttachLocation) {
+            DraftLocationJob.start(ctx)
+        }
 
         val i = Intent(ctx, RecordingService::class.java)
             .putExtra(RecordingService.EXTRA_TYPE, RecordingService.TYPE_MIC)

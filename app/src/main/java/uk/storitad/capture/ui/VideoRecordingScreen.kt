@@ -38,8 +38,10 @@ import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import uk.storitad.capture.capture.RecordingService
 import uk.storitad.capture.capture.VideoRecorder
+import uk.storitad.capture.settings.CaptureSettings
 import uk.storitad.capture.storage.FileManager
 import uk.storitad.capture.ui.drafts.DraftHolder
+import uk.storitad.capture.ui.drafts.DraftLocationJob
 import java.io.File
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -179,6 +181,9 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                         val file = File(FileManager.inboxDir(ctx), FileManager.mediaFilename(base, "mp4"))
                         basename = base
                         DraftHolder.begin(base, now, zone, file)
+                        if (CaptureSettings(ctx).autoAttachLocation) {
+                            DraftLocationJob.start(ctx)
+                        }
 
                         val i = Intent(ctx, RecordingService::class.java)
                             .putExtra(RecordingService.EXTRA_TYPE, RecordingService.TYPE_CAMERA)
