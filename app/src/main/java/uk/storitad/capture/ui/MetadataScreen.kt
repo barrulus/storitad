@@ -37,7 +37,11 @@ fun MetadataScreen(basename: String, onSaved: () -> Unit, onDiscard: () -> Unit)
         runCatching { RecipientsRepository(ctx).list() }.getOrDefault(emptyList())
     }
 
-    val existing = remember(basename) { repo.read(basename) }
+    val existing = remember(basename) { runCatching { repo.read(basename) }.getOrNull() }
+    if (existing == null) {
+        LaunchedEffect(Unit) { onDiscard() }
+        return
+    }
 
     var subject by remember { mutableStateOf(existing.subject) }
     val recipients = remember { mutableStateListOf<String>().apply { addAll(existing.recipients) } }

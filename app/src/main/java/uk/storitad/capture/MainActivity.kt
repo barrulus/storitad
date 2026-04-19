@@ -79,7 +79,7 @@ private fun App(startOnRecording: Boolean) {
                 basename = basename,
                 onSaved = { nav.popBackStack(Route.Home.path, inclusive = false) },
                 onRerecord = {
-                    val reRoute = if (basename.contains("-video"))
+                    val reRoute = if (basename.endsWith("-video"))
                         Route.VideoRecording.path else Route.Recording.path
                     nav.navigate(reRoute) { popUpTo(Route.Home.path) }
                 },
