@@ -24,6 +24,7 @@ import uk.storitad.capture.metadata.Recipient
 import uk.storitad.capture.metadata.RecipientsRepository
 import uk.storitad.capture.reminders.ReminderPrefs
 import uk.storitad.capture.reminders.ReminderScheduler
+import uk.storitad.capture.settings.CaptureSettings
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -31,6 +32,40 @@ fun SettingsScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val repo = remember { RecipientsRepository(ctx) }
     val reminders = remember { ReminderPrefs(ctx) }
+
+    val capture = remember { CaptureSettings(ctx) }
+    var autoLocation by remember { mutableStateOf(capture.autoAttachLocation) }
+    var locPermDenied by remember { mutableStateOf(false) }
+
+    val locPermLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            capture.autoAttachLocation = true
+            autoLocation = true
+            locPermDenied = false
+        } else {
+            locPermDenied = true
+        }
+    }
+
+    fun onToggleLocation(newValue: Boolean) {
+        if (newValue) {
+            val granted = ContextCompat.checkSelfPermission(
+                ctx, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (granted) {
+                capture.autoAttachLocation = true
+                autoLocation = true
+                locPermDenied = false
+            } else {
+                locPermLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+        } else {
+            capture.autoAttachLocation = false
+            autoLocation = false
+        }
+    }
 
     val items = remember { mutableStateListOf<Recipient>() }
     var showAdd by remember { mutableStateOf(false) }
@@ -120,6 +155,33 @@ fun SettingsScreen(onBack: () -> Unit) {
                         if (remindersEnabled) ReminderScheduler.reschedule(ctx)
                     }
                 )
+            }
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Auto-attach location while recording",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    "When on, a GPS fix is fetched in the background at record start and saved with the entry.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(checked = autoLocation, onCheckedChange = ::onToggleLocation)
+                        }
+                        if (locPermDenied) {
+                            Text(
+                                "Fine location permission is required.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
             }
             item {
                 Text(
