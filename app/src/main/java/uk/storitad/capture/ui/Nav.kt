@@ -4,11 +4,11 @@ sealed class Route(val path: String) {
     data object Home : Route("home")
     data object Recording : Route("recording")
     data object VideoRecording : Route("video-recording")
-    data object Review : Route("review/{basename}") {
-        fun of(basename: String) = "review/$basename"
+    data object Commit : Route("commit/{basename}") {
+        fun of(basename: String) = "commit/$basename"
     }
-    data object Metadata : Route("metadata/{basename}?edit={edit}") {
-        fun of(basename: String, edit: Boolean = false) = "metadata/$basename?edit=$edit"
+    data object Metadata : Route("metadata/{basename}") {
+        fun of(basename: String) = "metadata/$basename"
     }
     data object Pending : Route("pending")
     data object History : Route("history")

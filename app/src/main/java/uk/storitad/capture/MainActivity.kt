@@ -15,7 +15,7 @@ import uk.storitad.capture.ui.HistoryScreen
 import uk.storitad.capture.ui.HomeScreen
 import uk.storitad.capture.ui.MetadataScreen
 import uk.storitad.capture.ui.RecordingScreen
-import uk.storitad.capture.ui.ReviewScreen
+import uk.storitad.capture.ui.CommitScreen
 import uk.storitad.capture.ui.SettingsScreen
 import uk.storitad.capture.ui.VideoRecordingScreen
 import uk.storitad.capture.ui.Route
@@ -53,7 +53,7 @@ private fun App(startOnRecording: Boolean) {
         composable(Route.Recording.path) {
             RecordingScreen(
                 onStopped = { basename ->
-                    nav.navigate(Route.Review.of(basename)) {
+                    nav.navigate(Route.Commit.of(basename)) {
                         popUpTo(Route.Home.path)
                     }
                 },
@@ -63,7 +63,7 @@ private fun App(startOnRecording: Boolean) {
         composable(Route.VideoRecording.path) {
             VideoRecordingScreen(
                 onStopped = { basename ->
-                    nav.navigate(Route.Review.of(basename)) {
+                    nav.navigate(Route.Commit.of(basename)) {
                         popUpTo(Route.Home.path)
                     }
                 },
@@ -71,13 +71,13 @@ private fun App(startOnRecording: Boolean) {
             )
         }
         composable(
-            Route.Review.path,
+            Route.Commit.path,
             arguments = listOf(navArgument("basename") { type = NavType.StringType })
         ) { entry ->
             val basename = entry.arguments!!.getString("basename")!!
-            ReviewScreen(
+            CommitScreen(
                 basename = basename,
-                onContinue = { nav.navigate(Route.Metadata.of(basename)) },
+                onSaved = { nav.popBackStack(Route.Home.path, inclusive = false) },
                 onRerecord = {
                     val reRoute = if (basename.contains("-video"))
                         Route.VideoRecording.path else Route.Recording.path
@@ -88,16 +88,11 @@ private fun App(startOnRecording: Boolean) {
         }
         composable(
             Route.Metadata.path,
-            arguments = listOf(
-                navArgument("basename") { type = NavType.StringType },
-                navArgument("edit") { type = NavType.BoolType; defaultValue = false }
-            )
+            arguments = listOf(navArgument("basename") { type = NavType.StringType })
         ) { entry ->
             val basename = entry.arguments!!.getString("basename")!!
-            val edit = entry.arguments!!.getBoolean("edit")
             MetadataScreen(
                 basename = basename,
-                editExisting = edit,
                 onSaved = { nav.popBackStack(Route.Home.path, inclusive = false) },
                 onDiscard = { nav.popBackStack(Route.Home.path, inclusive = false) }
             )
@@ -107,7 +102,7 @@ private fun App(startOnRecording: Boolean) {
                 title = "Pending",
                 onlyPending = true,
                 onOpen = { basename -> nav.navigate(Route.Detail.of(basename)) },
-                onEdit = { basename -> nav.navigate(Route.Metadata.of(basename, edit = true)) },
+                onEdit = { basename -> nav.navigate(Route.Metadata.of(basename)) },
                 onBack = { nav.popBackStack() }
             )
         }
@@ -122,7 +117,7 @@ private fun App(startOnRecording: Boolean) {
             DetailScreen(
                 basename = basename,
                 onBack = { nav.popBackStack() },
-                onEdit = { b -> nav.navigate(Route.Metadata.of(b, edit = true)) }
+                onEdit = { b -> nav.navigate(Route.Metadata.of(b)) }
             )
         }
         composable(Route.Settings.path) {

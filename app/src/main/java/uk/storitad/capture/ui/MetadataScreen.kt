@@ -1,7 +1,6 @@
 package uk.storitad.capture.ui
 
 import android.Manifest
-import android.os.Build
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,16 +14,11 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import kotlinx.coroutines.launch
-import uk.storitad.capture.BuildConfig
 import uk.storitad.capture.location.LocationProvider
-import uk.storitad.capture.metadata.EntryMetadata
 import uk.storitad.capture.metadata.GeoFix
-import uk.storitad.capture.metadata.MediaType
 import uk.storitad.capture.metadata.MetadataRepository
 import uk.storitad.capture.metadata.RecipientsRepository
 import uk.storitad.capture.storage.FileManager
-import uk.storitad.capture.ui.drafts.DraftHolder
-import java.util.UUID
 
 private val MOODS = listOf(
     "happy" to "😊", "proud" to "💪", "reflective" to "🤔", "grateful" to "🙏",
@@ -34,34 +28,29 @@ private val MOODS = listOf(
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit, onDiscard: () -> Unit) {
+fun MetadataScreen(basename: String, onSaved: () -> Unit, onDiscard: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val repo = remember { MetadataRepository(FileManager.inboxDir(ctx)) }
-    val draft = DraftHolder.get()
 
     val recipientPresets = remember {
         runCatching { RecipientsRepository(ctx).list() }.getOrDefault(emptyList())
     }
 
-    val existing: EntryMetadata? = remember(basename, editExisting) {
-        if (editExisting) runCatching { repo.read(basename) }.getOrNull() else null
-    }
+    val existing = remember(basename) { repo.read(basename) }
 
-    var subject by remember { mutableStateOf(existing?.subject ?: "") }
-    val recipients = remember {
-        mutableStateListOf<String>().apply {
-            addAll(existing?.recipients ?: listOf("family"))
-        }
-    }
-    var mood by remember { mutableStateOf(existing?.mood) }
-    var tagsText by remember { mutableStateOf(existing?.tags?.joinToString(", ") ?: "") }
-    var notes by remember { mutableStateOf(existing?.notes ?: "") }
-    var confirmDiscard by remember { mutableStateOf(false) }
+    var subject by remember { mutableStateOf(existing.subject) }
+    val recipients = remember { mutableStateListOf<String>().apply { addAll(existing.recipients) } }
+    var mood by remember { mutableStateOf(existing.mood) }
+    var tagsText by remember { mutableStateOf(existing.tags.joinToString(", ")) }
+    var notes by remember { mutableStateOf(existing.notes ?: "") }
+    var confirmLeave by remember { mutableStateOf(false) }
 
-    var locationOn by remember { mutableStateOf(existing?.location != null) }
-    var locationFix by remember { mutableStateOf<GeoFix?>(existing?.location) }
-    var locationStatus by remember { mutableStateOf(existing?.location?.accuracyMeters?.let { "±${it.toInt()} m" } ?: "") }
+    var locationOn by remember { mutableStateOf(existing.location != null) }
+    var locationFix by remember { mutableStateOf<GeoFix?>(existing.location) }
+    var locationStatus by remember {
+        mutableStateOf(existing.location?.accuracyMeters?.let { "±${it.toInt()} m" } ?: "")
+    }
     val locProvider = remember { LocationProvider(ctx) }
     val locPermission = rememberPermissionState(Manifest.permission.ACCESS_FINE_LOCATION)
 
@@ -93,8 +82,8 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (editExisting) "Edit details" else "Details") },
-                navigationIcon = { TextButton(onClick = { confirmDiscard = true }) { Text(if (editExisting) "Back" else "Discard") } }
+                title = { Text("Edit details") },
+                navigationIcon = { TextButton(onClick = { confirmLeave = true }) { Text("Back") } }
             )
         }
     ) { pad ->
@@ -133,7 +122,6 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
                 }
             }
 
-            // Location toggle
             OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     Modifier.padding(16.dp).fillMaxWidth(),
@@ -179,24 +167,7 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
 
             Button(
                 onClick = {
-                    val base = existing ?: run {
-                        val d = draft ?: return@Button
-                        if (subject.isBlank()) return@Button
-                        val isVideo = d.mediaFile.extension.equals("mp4", ignoreCase = true)
-                        EntryMetadata(
-                            id = UUID.randomUUID().toString(),
-                            capturedAt = d.capturedAt,
-                            durationSeconds = d.durationMs / 1000,
-                            timezone = d.timezone.id,
-                            mediaFile = d.mediaFile.name,
-                            mediaType = if (isVideo) MediaType.VIDEO else MediaType.VOICE,
-                            mimeType = if (isVideo) "video/mp4" else "audio/mp4",
-                            subject = subject.trim(),
-                            device = Build.MODEL,
-                            appVersion = BuildConfig.VERSION_NAME
-                        )
-                    }
-                    val entry = base.copy(
+                    val entry = existing.copy(
                         subject = subject.trim(),
                         recipients = recipients.toList(),
                         mood = mood,
@@ -205,7 +176,6 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
                         location = if (locationOn) locationFix else null
                     )
                     repo.write(entry)
-                    if (!editExisting) DraftHolder.consume()
                     onSaved()
                 },
                 enabled = subject.isNotBlank(),
@@ -214,24 +184,18 @@ fun MetadataScreen(basename: String, editExisting: Boolean, onSaved: () -> Unit,
         }
     }
 
-    if (confirmDiscard) {
+    if (confirmLeave) {
         AlertDialog(
-            onDismissRequest = { confirmDiscard = false },
+            onDismissRequest = { confirmLeave = false },
             confirmButton = {
                 TextButton(onClick = {
-                    confirmDiscard = false
-                    if (!editExisting) DraftHolder.clear()
+                    confirmLeave = false
                     onDiscard()
-                }) { Text(if (editExisting) "Leave" else "Discard") }
+                }) { Text("Leave") }
             },
-            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("Keep") } },
-            title = { Text(if (editExisting) "Leave without saving?" else "Discard recording?") },
-            text = {
-                Text(
-                    if (editExisting) "Unsaved edits will be lost."
-                    else "This deletes the audio and cannot be undone."
-                )
-            }
+            dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text("Keep") } },
+            title = { Text("Leave without saving?") },
+            text = { Text("Unsaved edits will be lost.") }
         )
     }
 }
