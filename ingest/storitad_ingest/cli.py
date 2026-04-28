@@ -301,6 +301,15 @@ def pull_cmd(ctx: click.Context, transport: str | None, staging: Path | None, dr
             except Exception as e:
                 click.echo(f"  quota enforcement skipped: {e}", err=True)
 
+        # Clear staging now that ingest succeeded — otherwise a one-shot pull
+        # leaves a full duplicate of the batch on disk until the *next* pull's
+        # start-of-run wipe.
+        import shutil as _shutil
+        try:
+            _shutil.rmtree(staging_dir, ignore_errors=True)
+        except Exception as e:
+            click.echo(f"  staging cleanup skipped: {e}", err=True)
+
     click.echo("Rendering site…")
     render_site.render(cfg.archive_root, cfg.recipient_emoji)
     index_html = cfg.archive_root / "site" / "index.html"
