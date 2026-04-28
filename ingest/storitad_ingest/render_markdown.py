@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from . import normalise
 from .sidecar import Sidecar
 
 
@@ -77,5 +78,12 @@ def write_entry(
 
     md_path.write_text("\n".join(parts))
     if media_src != media_dst:
-        shutil.copy2(media_src, media_dst)
+        # Video: normalise audio while copying (CameraX records via the
+        # CAMCORDER source which is noticeably quieter than the voice path's
+        # MIC source). Voice .m4a is already loud enough — straight copy.
+        is_video = sc.media_type.lower() == "video"
+        if is_video and normalise.normalise_to(media_src, media_dst):
+            pass
+        else:
+            shutil.copy2(media_src, media_dst)
     return md_path

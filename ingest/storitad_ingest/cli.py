@@ -11,7 +11,7 @@ import yaml
 
 from . import __version__
 from . import aliases as aliases_mod
-from . import pull, render_markdown, render_site, serve as serve_mod, sidecar, transcribe
+from . import normalise, pull, render_markdown, render_site, serve as serve_mod, sidecar, transcribe
 
 
 DEFAULT_ARCHIVE = Path.home() / "journal"
@@ -317,6 +317,39 @@ def pull_cmd(ctx: click.Context, transport: str | None, staging: Path | None, dr
 
     if not no_open and index_html.exists():
         webbrowser.open(index_html.as_uri())
+
+
+@main.command("renorm")
+@click.option("--dry-run", is_flag=True, help="List what would be processed, don't touch files")
+@click.option("--entry", "entry_id", default=None, help="Re-normalise only this basename")
+@click.pass_context
+def renorm_cmd(ctx: click.Context, dry_run: bool, entry_id: str | None) -> None:
+    """Re-normalise audio on existing video entries (back-fills the archive
+    after the loudness fix)."""
+    cfg = load_config(ctx.obj["config_path"])
+    if not normalise.ffmpeg_available():
+        raise click.ClickException("ffmpeg not on PATH")
+    entries_root = cfg.archive_root / "entries"
+    if not entries_root.exists():
+        click.echo("no entries to process"); return
+
+    targets = sorted(entries_root.rglob("*.mp4"))
+    if entry_id:
+        targets = [p for p in targets if p.stem == entry_id]
+    click.echo(f"{len(targets)} video(s) to process")
+
+    ok = 0; fail = 0
+    for p in targets:
+        rel = p.relative_to(cfg.archive_root)
+        if dry_run:
+            click.echo(f"  would normalise: {rel}"); continue
+        click.echo(f"  {rel}")
+        if normalise.normalise_in_place(p):
+            ok += 1
+        else:
+            click.echo(f"    FAIL — left untouched", err=True); fail += 1
+    if not dry_run:
+        click.echo(f"normalised {ok}, failed {fail}")
 
 
 @main.command("serve")
