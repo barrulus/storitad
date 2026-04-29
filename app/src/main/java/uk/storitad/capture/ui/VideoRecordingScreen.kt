@@ -36,6 +36,7 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import uk.storitad.capture.capture.RecordingService
@@ -73,6 +74,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     var basename by remember { mutableStateOf<String?>(null) }
     var service by remember { mutableStateOf<RecordingService?>(null) }
     var useFront by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
 
     val conn = remember {
         object : ServiceConnection {
@@ -216,16 +218,18 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i) else ctx.startService(i)
                         ctx.bindService(i, conn, Context.BIND_AUTO_CREATE)
 
-                        recorder.start(file) { durationMs ->
-                            DraftHolder.finalise(durationMs)
-                            recording = false
+                        scope.launch {
+                            recorder.start(file) { durationMs ->
+                                DraftHolder.finalise(durationMs)
+                                recording = false
+                                paused = false
+                                runCatching { ctx.unbindService(conn) }
+                                ctx.stopService(Intent(ctx, RecordingService::class.java))
+                                onStopped(base)
+                            }
+                            recording = true
                             paused = false
-                            runCatching { ctx.unbindService(conn) }
-                            ctx.stopService(Intent(ctx, RecordingService::class.java))
-                            onStopped(base)
                         }
-                        recording = true
-                        paused = false
                     } else {
                         recorder.stop()
                     }

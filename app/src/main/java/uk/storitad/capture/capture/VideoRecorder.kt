@@ -58,7 +58,7 @@ class VideoRecorder(private val context: Context) {
 
     /** Start recording into [target]. Calls [onFinalised] with the captured duration on stop/cancel. */
     @SuppressLint("MissingPermission")
-    fun start(target: File, onFinalised: (Long) -> Unit) {
+    suspend fun start(target: File, onFinalised: (Long) -> Unit) {
         require(!recording) { "already recording" }
         outputFile = target
         this.onFinalised = onFinalised
@@ -66,9 +66,9 @@ class VideoRecorder(private val context: Context) {
         val rec = buildRecorder(target)
         recorder = rec
         recorderSurface = rec.surface
-        rec.start()        // OK to start recorder before camera writes — Surface buffers
 
         rebuildSessionForRecording()
+        rec.start()
         startedAtMs = System.currentTimeMillis()
         pausedAccumMs = 0
         paused = false
@@ -176,23 +176,19 @@ class VideoRecorder(private val context: Context) {
             }, cameraHandler)
         }
 
-    private fun startPreviewSession() {
+    private suspend fun startPreviewSession() {
         val cam = camera ?: return
         val preview = previewSurface ?: return
         val builder = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(preview)
         }
         captureRequestBuilder = builder
-        // Use blocking session creation here — bind() is suspend and waits.
-        cameraHandler.post {
-            kotlinx.coroutines.runBlocking {
-                session = createSession(listOf(preview))
-                session?.setRepeatingRequest(builder.build(), null, cameraHandler)
-            }
-        }
+        val s = createSession(listOf(preview))
+        session = s
+        s.setRepeatingRequest(builder.build(), null, cameraHandler)
     }
 
-    private fun rebuildSessionForRecording() {
+    private suspend fun rebuildSessionForRecording() {
         val cam = camera ?: error("camera not opened")
         val preview = previewSurface ?: error("no preview surface")
         val recSurf = recorderSurface ?: error("no recorder surface")
@@ -202,12 +198,9 @@ class VideoRecorder(private val context: Context) {
             addTarget(recSurf)
         }
         captureRequestBuilder = builder
-        cameraHandler.post {
-            kotlinx.coroutines.runBlocking {
-                session = createSession(listOf(preview, recSurf))
-                session?.setRepeatingRequest(builder.build(), null, cameraHandler)
-            }
-        }
+        val s = createSession(listOf(preview, recSurf))
+        session = s
+        s.setRepeatingRequest(builder.build(), null, cameraHandler)
     }
 
     private fun buildRecorder(target: File): MediaRecorder {
