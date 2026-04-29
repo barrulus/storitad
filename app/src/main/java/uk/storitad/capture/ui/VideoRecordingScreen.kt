@@ -8,8 +8,9 @@ import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
 import android.util.Size
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
+import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -117,13 +118,27 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { c ->
-                SurfaceView(c).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(h: SurfaceHolder) { surface = h.surface }
-                        override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) {}
-                        override fun surfaceDestroyed(h: SurfaceHolder) { surface = null }
-                    })
+                TextureView(c).apply {
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                            st.setDefaultBufferSize(1280, 720)
+                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), useFront)
+                            surface = android.view.Surface(st)
+                        }
+                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), useFront)
+                        }
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                            surface = null
+                            return true
+                        }
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    }
                 }
+            },
+            update = { tv ->
+                // Re-apply transform when camera flips (sensor orientation may change between front/back)
+                applyPreviewTransform(tv, tv.width, tv.height, recorder.sensorOrientation(), useFront)
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -265,4 +280,42 @@ private fun PermissionBlock(onCancel: () -> Unit) {
 private fun formatElapsed(ms: Long): String {
     val sec = ms / 1000
     return "%d:%02d".format(sec / 60, sec % 60)
+}
+
+/**
+ * Aspect-fit the camera's 1280x720 landscape buffer into a portrait TextureView and
+ * rotate to upright. Computes a Matrix that scales the buffer down so the longer
+ * camera dimension fits the shorter view dimension, then rotates by sensor orientation.
+ * Front camera also mirrors horizontally so the preview reads as a selfie view.
+ */
+private fun applyPreviewTransform(
+    view: TextureView,
+    viewW: Int,
+    viewH: Int,
+    sensorOrientation: Int,
+    isFrontCamera: Boolean
+) {
+    if (viewW == 0 || viewH == 0) return
+    val bufW = 1280f
+    val bufH = 720f
+    // The buffer arrives oriented at sensorOrientation. After rotation, the "logical"
+    // width and height swap when sensorOrientation is 90 or 270.
+    val rotated = sensorOrientation == 90 || sensorOrientation == 270
+    val srcW = if (rotated) bufH else bufW
+    val srcH = if (rotated) bufW else bufH
+    // Aspect-fit: scale so the buffer's rotated bounding box fits the view; letterbox the rest.
+    val scale = minOf(viewW / srcW, viewH / srcH)
+    val matrix = Matrix()
+    // Center the (unrotated) buffer at the view origin's center, then rotate around that center.
+    matrix.postRotate(sensorOrientation.toFloat(), bufW / 2f, bufH / 2f)
+    // Re-center the rotated buffer to the view center, then scale.
+    val centerX = viewW / 2f
+    val centerY = viewH / 2f
+    matrix.postTranslate(centerX - bufW / 2f, centerY - bufH / 2f)
+    matrix.postScale(scale, scale, centerX, centerY)
+    if (isFrontCamera) {
+        // Mirror around the view's vertical centerline so the selfie preview reads correctly.
+        matrix.postScale(-1f, 1f, centerX, centerY)
+    }
+    view.setTransform(matrix)
 }

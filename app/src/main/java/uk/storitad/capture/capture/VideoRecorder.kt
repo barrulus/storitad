@@ -128,6 +128,13 @@ class VideoRecorder(private val context: Context) {
         sess.setRepeatingRequest(builder.build(), null, cameraHandler)
     }
 
+    /** Sensor orientation for the currently-bound camera in degrees (0/90/180/270). 0 if not bound. */
+    fun sensorOrientation(): Int {
+        val cam = camera ?: return 0
+        return cameraManager.getCameraCharacteristics(cam.id)
+            .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+    }
+
     fun elapsedMs(): Long {
         if (!recording) return 0
         val now = System.currentTimeMillis()
@@ -210,6 +217,13 @@ class VideoRecorder(private val context: Context) {
 
         val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context)
                 else @Suppress("DEPRECATION") MediaRecorder()
+
+        val sensorRotation = camera?.let {
+            cameraManager.getCameraCharacteristics(it.id)
+                .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        } ?: 0
+        val hint = if (useFrontCamera) (360 - sensorRotation) % 360 else sensorRotation
+        r.setOrientationHint(hint)
 
         r.setAudioSource(source)
         r.setVideoSource(MediaRecorder.VideoSource.SURFACE)
