@@ -9,7 +9,9 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Size
 import android.graphics.Matrix
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -29,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -68,6 +71,14 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     }
 
     val recorder = remember { VideoRecorder(ctx) }
+    val view = LocalView.current
+    val displayRotation = LocalConfiguration.current.let {
+        // Re-read on configuration change. View.display is the right source of rotation.
+        view.display?.rotation ?: Surface.ROTATION_0
+    }
+    LaunchedEffect(displayRotation) {
+        recorder.displayRotation = displayRotation
+    }
     var surface by remember { mutableStateOf<android.view.Surface?>(null) }
     var recording by remember { mutableStateOf(false) }
     var paused by remember { mutableStateOf(false) }
@@ -111,7 +122,6 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         }
     }
 
-    val view = LocalView.current
     SideEffect { view.keepScreenOn = recording }
     DisposableEffect(Unit) { onDispose { view.keepScreenOn = false } }
 
@@ -122,11 +132,11 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                             st.setDefaultBufferSize(1280, 720)
-                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), useFront)
+                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), displayRotation, useFront)
                             surface = android.view.Surface(st)
                         }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), useFront)
+                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), displayRotation, useFront)
                         }
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             surface = null
@@ -138,7 +148,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             },
             update = { tv ->
                 // Re-apply transform when camera flips (sensor orientation may change between front/back)
-                applyPreviewTransform(tv, tv.width, tv.height, recorder.sensorOrientation(), useFront)
+                applyPreviewTransform(tv, tv.width, tv.height, recorder.sensorOrientation(), displayRotation, useFront)
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -283,39 +293,63 @@ private fun formatElapsed(ms: Long): String {
 }
 
 /**
- * Aspect-fit the camera's 1280x720 landscape buffer into a portrait TextureView and
- * rotate to upright. Computes a Matrix that scales the buffer down so the longer
- * camera dimension fits the shorter view dimension, then rotates by sensor orientation.
- * Front camera also mirrors horizontally so the preview reads as a selfie view.
+ * Aspect-correct (cover) preview transform for a 1280x720 landscape camera buffer
+ * displayed in a TextureView whose default behaviour is to fill the view.
+ *
+ * Standard Camera2 approach: undo the default fill via setRectToRect to a rotated
+ * buffer rect, then post-scale to cover, then post-rotate by (sensor - display) for
+ * back camera or (sensor + display) for front. Front camera adds a horizontal mirror
+ * for selfie-natural feel.
  */
 private fun applyPreviewTransform(
     view: TextureView,
     viewW: Int,
     viewH: Int,
     sensorOrientation: Int,
-    isFrontCamera: Boolean
+    displayRotation: Int,
+    isFrontCamera: Boolean,
 ) {
     if (viewW == 0 || viewH == 0) return
+
     val bufW = 1280f
     val bufH = 720f
-    // The buffer arrives oriented at sensorOrientation. After rotation, the "logical"
-    // width and height swap when sensorOrientation is 90 or 270.
-    val rotated = sensorOrientation == 90 || sensorOrientation == 270
-    val srcW = if (rotated) bufH else bufW
-    val srcH = if (rotated) bufW else bufH
-    // Aspect-fit: scale so the buffer's rotated bounding box fits the view; letterbox the rest.
-    val scale = minOf(viewW / srcW, viewH / srcH)
-    val matrix = Matrix()
-    // Center the (unrotated) buffer at the view origin's center, then rotate around that center.
-    matrix.postRotate(sensorOrientation.toFloat(), bufW / 2f, bufH / 2f)
-    // Re-center the rotated buffer to the view center, then scale.
-    val centerX = viewW / 2f
-    val centerY = viewH / 2f
-    matrix.postTranslate(centerX - bufW / 2f, centerY - bufH / 2f)
-    matrix.postScale(scale, scale, centerX, centerY)
+    val displayDegrees = when (displayRotation) {
+        Surface.ROTATION_0 -> 0
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
+    }
+    val rotation = if (isFrontCamera) {
+        (sensorOrientation + displayDegrees) % 360
+    } else {
+        (sensorOrientation - displayDegrees + 360) % 360
+    }
+
+    val matrix = android.graphics.Matrix()
+    val viewRect = RectF(0f, 0f, viewW.toFloat(), viewH.toFloat())
+    val centerX = viewRect.centerX()
+    val centerY = viewRect.centerY()
+
+    if (rotation == 90 || rotation == 270) {
+        // Buffer's effective dimensions after rotation are (bufH, bufW) — portrait shape.
+        val bufferRect = RectF(0f, 0f, bufH, bufW)
+        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+        // Map view rect to the centered (rotated) buffer rect — undoes the default fill,
+        // making the buffer occupy a centered area at correct rotated aspect.
+        matrix.setRectToRect(viewRect, bufferRect, android.graphics.Matrix.ScaleToFit.FILL)
+        // Cover scale: fill the view, possibly cropping. Long camera dim is bufW (will be height).
+        val scale = kotlin.math.max(viewH / bufW, viewW / bufH)
+        matrix.postScale(scale, scale, centerX, centerY)
+        matrix.postRotate(rotation.toFloat(), centerX, centerY)
+    } else if (rotation == 180) {
+        matrix.postRotate(180f, centerX, centerY)
+    }
+    // rotation == 0: identity matrix — default fill is already correct (landscape device, landscape buffer).
+
     if (isFrontCamera) {
-        // Mirror around the view's vertical centerline so the selfie preview reads correctly.
         matrix.postScale(-1f, 1f, centerX, centerY)
     }
+
     view.setTransform(matrix)
 }

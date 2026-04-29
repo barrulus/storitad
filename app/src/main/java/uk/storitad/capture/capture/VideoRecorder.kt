@@ -48,6 +48,9 @@ class VideoRecorder(private val context: Context) {
 
     var useFrontCamera: Boolean = true
 
+    /** Surface.ROTATION_0/90/180/270. The screen sets this on bind and on configuration change. */
+    @Volatile var displayRotation: Int = android.view.Surface.ROTATION_0
+
     /** Open camera and start preview into [previewSurface]. */
     suspend fun bind(previewSurface: Surface, previewSize: Size) {
         this.previewSurface = previewSurface
@@ -222,7 +225,18 @@ class VideoRecorder(private val context: Context) {
             cameraManager.getCameraCharacteristics(it.id)
                 .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         } ?: 0
-        val hint = if (useFrontCamera) (360 - sensorRotation) % 360 else sensorRotation
+        val displayDegrees = when (displayRotation) {
+            android.view.Surface.ROTATION_0 -> 0
+            android.view.Surface.ROTATION_90 -> 90
+            android.view.Surface.ROTATION_180 -> 180
+            android.view.Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        val hint = if (useFrontCamera) {
+            (sensorRotation + displayDegrees) % 360
+        } else {
+            (sensorRotation - displayDegrees + 360) % 360
+        }
         r.setOrientationHint(hint)
 
         r.setAudioSource(source)
