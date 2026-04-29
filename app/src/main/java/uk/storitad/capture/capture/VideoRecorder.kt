@@ -56,6 +56,10 @@ class VideoRecorder(private val context: Context) {
         this.previewSurface = previewSurface
         val cameraId = pickCameraId(useFrontCamera)
         camera = openCamera(cameraId)
+        val ch = cameraManager.getCameraCharacteristics(cameraId)
+        val so = ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
+        val lf = ch.get(CameraCharacteristics.LENS_FACING)
+        Log.d(TAG, "bind: cameraId=$cameraId useFrontCamera=$useFrontCamera lensFacing=$lf sensorOrientation=$so displayRotation=$displayRotation previewSize=$previewSize")
         startPreviewSession()
     }
 

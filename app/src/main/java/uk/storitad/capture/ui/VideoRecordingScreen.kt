@@ -333,6 +333,10 @@ private fun applyPreviewTransform(
     val rotW = if (rotated) bufH else bufW
     val rotH = if (rotated) bufW else bufH
     val scale = kotlin.math.max(viewW / rotW, viewH / rotH)
+    android.util.Log.d(
+        "VideoPreview",
+        "applyPreviewTransform: view=${viewW}x${viewH} buf=${bufW.toInt()}x${bufH.toInt()} sensor=$sensorOrientation display=$displayRotation front=$isFrontCamera => rotation=$rotation rotW=${rotW.toInt()} rotH=${rotH.toInt()} scale=$scale"
+    )
 
     val matrix = android.graphics.Matrix()
     // Step 1: undo default fill — view coord back to buffer coord.
