@@ -1,5 +1,6 @@
 package uk.storitad.capture.capture
 
+import android.media.MediaRecorder
 import android.util.Size
 
 private const val TARGET_W = 1280
@@ -33,3 +34,20 @@ internal fun pickVideoSizeFrom(candidates: List<Pair<Int, Int>>): Pair<Int, Int>
     if (below.isNotEmpty()) return below.maxByOrNull { it.first.toLong() * it.second }
     return candidates.minByOrNull { it.first.toLong() * it.second }
 }
+
+/**
+ * Pick the best audio source for recording.
+ *
+ * Preference: UNPROCESSED if the device reports support, else MIC.
+ *
+ * The caller is expected to query device support via:
+ * ```
+ * audioManager.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
+ * ```
+ *
+ * @param unprocessedSupported Boolean indicating device support for UNPROCESSED source
+ * @return MediaRecorder.AudioSource.UNPROCESSED or MediaRecorder.AudioSource.MIC
+ */
+fun pickAudioSource(unprocessedSupported: Boolean): Int =
+    if (unprocessedSupported) MediaRecorder.AudioSource.UNPROCESSED
+    else MediaRecorder.AudioSource.MIC

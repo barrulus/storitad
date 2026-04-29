@@ -1,5 +1,6 @@
 package uk.storitad.capture.capture
 
+import android.media.MediaRecorder
 import org.junit.Test
 import org.junit.Assert.assertEquals
 
@@ -22,5 +23,13 @@ class VideoRecorderHelpersTest {
 
     @Test fun `returns null on empty list`() {
         assertEquals(null, pickVideoSizeFrom(emptyList()))
+    }
+
+    @Test fun `picks UNPROCESSED when device reports support`() {
+        assertEquals(MediaRecorder.AudioSource.UNPROCESSED, pickAudioSource(unprocessedSupported = true))
+    }
+
+    @Test fun `falls back to MIC when device does not report support`() {
+        assertEquals(MediaRecorder.AudioSource.MIC, pickAudioSource(unprocessedSupported = false))
     }
 }
