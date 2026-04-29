@@ -102,7 +102,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     DisposableEffect(Unit) {
         onDispose {
             if (recording) recorder.cancel()
-            recorder.unbind()
+            recorder.release()
             runCatching { ctx.unbindService(conn) }
             ctx.stopService(Intent(ctx, RecordingService::class.java))
         }
@@ -163,6 +163,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         // Camera-swap — bottom-right (disabled while recording)
         IconButton(
             onClick = { if (!recording) useFront = !useFront },
+            enabled = !recording,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp, bottom = 64.dp)

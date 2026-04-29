@@ -107,6 +107,11 @@ class VideoRecorder(private val context: Context) {
         runCatching { session?.close() }; session = null
         runCatching { camera?.close() }; camera = null
         runCatching { previewSurface = null }
+    }
+
+    /** Final teardown — call when the recorder is no longer needed. Thread is unusable after this. */
+    fun release() {
+        unbind()
         runCatching { cameraThread.quitSafely() }
     }
 
