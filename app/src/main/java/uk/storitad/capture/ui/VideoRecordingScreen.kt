@@ -7,8 +7,9 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
-import androidx.camera.core.Preview
-import androidx.camera.view.PreviewView
+import android.util.Size
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -17,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,7 +29,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -48,7 +50,6 @@ import java.io.File
 @Composable
 fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     val ctx = LocalContext.current
-    val owner = LocalLifecycleOwner.current
     val perms = rememberMultiplePermissionsState(
         buildList {
             add(Manifest.permission.CAMERA)
@@ -65,9 +66,9 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     }
 
     val recorder = remember { VideoRecorder(ctx) }
-    val preview = remember { Preview.Builder().build() }
-    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var surface by remember { mutableStateOf<android.view.Surface?>(null) }
     var recording by remember { mutableStateOf(false) }
+    var paused by remember { mutableStateOf(false) }
     var elapsed by remember { mutableStateOf(0L) }
     var basename by remember { mutableStateOf<String?>(null) }
     var service by remember { mutableStateOf<RecordingService?>(null) }
@@ -82,16 +83,16 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         }
     }
 
-    LaunchedEffect(useFront, previewView) {
-        val v = previewView ?: return@LaunchedEffect
+    LaunchedEffect(useFront, surface) {
+        val s = surface ?: return@LaunchedEffect
         recorder.useFrontCamera = useFront
-        preview.setSurfaceProvider(v.surfaceProvider)
-        recorder.bind(owner, preview)
+        recorder.unbind()  // close prior camera handle (e.g., on flip)
+        recorder.bind(s, Size(1280, 720))
     }
 
-    LaunchedEffect(recording) {
-        val start = System.currentTimeMillis()
-        while (recording) {
+    LaunchedEffect(recording, paused) {
+        val start = System.currentTimeMillis() - elapsed
+        while (recording && !paused) {
             elapsed = System.currentTimeMillis() - start
             service?.updateElapsed(elapsed)
             delay(200)
@@ -114,9 +115,12 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { c ->
-                PreviewView(c).also {
-                    previewView = it
-                    preview.setSurfaceProvider(it.surfaceProvider)
+                SurfaceView(c).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(h: SurfaceHolder) { surface = h.surface }
+                        override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) {}
+                        override fun surfaceDestroyed(h: SurfaceHolder) { surface = null }
+                    })
                 }
             },
             modifier = Modifier
@@ -128,7 +132,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                 }
         )
 
-        // Close — top-right (front camera cutout is top-left on this device)
+        // Close — top-right
         IconButton(
             onClick = {
                 if (recording) recorder.cancel()
@@ -137,25 +141,26 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)
         ) { Icon(Icons.Filled.Close, contentDescription = "Cancel", tint = Color.White) }
 
-        // Timer chip — bottom-left, vertically centred on the record button
+        // Timer chip — bottom-left
         if (recording) {
             Surface(
-                color = MaterialTheme.colorScheme.error,
+                color = if (paused) MaterialTheme.colorScheme.surfaceVariant
+                        else MaterialTheme.colorScheme.error,
                 shape = CircleShape,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = 16.dp, bottom = 72.dp)
             ) {
                 Text(
-                    formatElapsed(elapsed),
-                    color = Color.White,
+                    if (paused) "PAUSED ${formatElapsed(elapsed)}" else formatElapsed(elapsed),
+                    color = if (paused) MaterialTheme.colorScheme.onSurface else Color.White,
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
         }
 
-        // Camera-swap — bottom-right
+        // Camera-swap — bottom-right (disabled while recording)
         IconButton(
             onClick = { if (!recording) useFront = !useFront },
             modifier = Modifier
@@ -165,7 +170,27 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             Icon(Icons.Filled.Cameraswitch, contentDescription = "Flip", tint = Color.White)
         }
 
-        // Record button
+        // Pause/Resume — appears only while recording, sits left of record button
+        if (recording) {
+            IconButton(
+                onClick = {
+                    if (paused) { recorder.resume(); paused = false }
+                    else { recorder.pause(); paused = true }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 24.dp, bottom = 48.dp)
+                    .size(64.dp)
+            ) {
+                Icon(
+                    if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                    contentDescription = if (paused) "Resume" else "Pause",
+                    tint = Color.White
+                )
+            }
+        }
+
+        // Record / stop button
         Box(
             Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
                 .size(80.dp)
@@ -193,11 +218,13 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                         recorder.start(file) { durationMs ->
                             DraftHolder.finalise(durationMs)
                             recording = false
+                            paused = false
                             runCatching { ctx.unbindService(conn) }
                             ctx.stopService(Intent(ctx, RecordingService::class.java))
                             onStopped(base)
                         }
                         recording = true
+                        paused = false
                     } else {
                         recorder.stop()
                     }
