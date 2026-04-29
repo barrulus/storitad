@@ -130,20 +130,30 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         AndroidView(
             factory = { c ->
                 TextureView(c).apply {
+                    val loggedTransformMatrix = java.util.concurrent.atomic.AtomicBoolean(false)
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                             st.setDefaultBufferSize(1280, 720)
+                            android.util.Log.d("VideoPreview", "onSurfaceTextureAvailable: textureViewSize=${w}x${h} setDefaultBufferSize(1280, 720) called")
                             applyPreviewTransform(this@apply, w, h, sensorOrientation, displayRotation, useFront)
                             surface = android.view.Surface(st)
                         }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                            android.util.Log.d("VideoPreview", "onSurfaceTextureSizeChanged: textureViewSize=${w}x${h}")
                             applyPreviewTransform(this@apply, w, h, sensorOrientation, displayRotation, useFront)
+                        }
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
+                            // Log buffer transform once — tells us whether Camera2 produced something other than 1280x720.
+                            val mtx = FloatArray(16)
+                            st.getTransformMatrix(mtx)
+                            if (loggedTransformMatrix.compareAndSet(false, true)) {
+                                android.util.Log.d("VideoPreview", "onSurfaceTextureUpdated: bufferTransform=${mtx.joinToString(",", "[", "]") { "%.3f".format(it) }}")
+                            }
                         }
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             surface = null
                             return true
                         }
-                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                     }
                 }
             },

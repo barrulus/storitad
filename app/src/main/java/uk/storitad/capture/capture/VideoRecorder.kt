@@ -59,7 +59,10 @@ class VideoRecorder(private val context: Context) {
         val ch = cameraManager.getCameraCharacteristics(cameraId)
         val so = ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
         val lf = ch.get(CameraCharacteristics.LENS_FACING)
+        val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val texSizes = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
         Log.d(TAG, "bind: cameraId=$cameraId useFrontCamera=$useFrontCamera lensFacing=$lf sensorOrientation=$so displayRotation=$displayRotation previewSize=$previewSize")
+        Log.d(TAG, "bind: supported SurfaceTexture sizes=${texSizes?.joinToString { "${it.width}x${it.height}" }}")
         startPreviewSession()
     }
 
