@@ -342,10 +342,13 @@ private fun applyPreviewTransform(
     val rotated = rotation == 90 || rotation == 270
     val rotW = if (rotated) bufH else bufW
     val rotH = if (rotated) bufW else bufH
-    val scale = kotlin.math.max(viewW / rotW, viewH / rotH)
+    // DIAGNOSTIC: use FIT (min) instead of COVER (max). Letterboxes if buffer aspect != view aspect.
+    // If preview now has correct face proportions (with black bars), matrix is correct and
+    // the previous "squashed" was the COVER crop. If still squashed, buffer aspect is wrong.
+    val scale = kotlin.math.min(viewW / rotW, viewH / rotH)
     android.util.Log.d(
         "VideoPreview",
-        "applyPreviewTransform: view=${viewW}x${viewH} buf=${bufW.toInt()}x${bufH.toInt()} sensor=$sensorOrientation display=$displayRotation front=$isFrontCamera => rotation=$rotation rotW=${rotW.toInt()} rotH=${rotH.toInt()} scale=$scale"
+        "applyPreviewTransform: view=${viewW}x${viewH} buf=${bufW.toInt()}x${bufH.toInt()} sensor=$sensorOrientation display=$displayRotation front=$isFrontCamera => rotation=$rotation rotW=${rotW.toInt()} rotH=${rotH.toInt()} scale=$scale (FIT)"
     )
 
     val matrix = android.graphics.Matrix()
