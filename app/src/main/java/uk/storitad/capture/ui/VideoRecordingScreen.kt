@@ -1,12 +1,10 @@
 package uk.storitad.capture.ui
 
 import android.Manifest
-import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Size
@@ -104,7 +102,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         recorder.useFrontCamera = useFront
         recorder.unbind()  // close prior camera handle (e.g., on flip)
         recorder.bind(s, Size(1280, 720))
-        sensorOrientation = sensorOrientation
+        sensorOrientation = recorder.sensorOrientation()
     }
 
     LaunchedEffect(recording, paused) {
@@ -113,17 +111,6 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             elapsed = System.currentTimeMillis() - start
             service?.updateElapsed(elapsed)
             delay(200)
-        }
-    }
-
-    DisposableEffect(Unit) {
-        val activity = ctx as? Activity
-        val previousOrientation = activity?.requestedOrientation
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        onDispose {
-            if (previousOrientation != null) {
-                activity?.requestedOrientation = previousOrientation
-            }
         }
     }
 
