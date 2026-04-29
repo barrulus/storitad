@@ -1,15 +1,16 @@
 package uk.storitad.capture.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Size
 import android.graphics.Matrix
-import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
@@ -110,6 +111,17 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             elapsed = System.currentTimeMillis() - start
             service?.updateElapsed(elapsed)
             delay(200)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        val activity = ctx as? Activity
+        val previousOrientation = activity?.requestedOrientation
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        onDispose {
+            if (previousOrientation != null) {
+                activity?.requestedOrientation = previousOrientation
+            }
         }
     }
 
@@ -293,13 +305,16 @@ private fun formatElapsed(ms: Long): String {
 }
 
 /**
- * Aspect-correct (cover) preview transform for a 1280x720 landscape camera buffer
- * displayed in a TextureView whose default behaviour is to fill the view.
+ * Build a TextureView transform that displays a 1280x720 sensor buffer correctly:
+ *   1. undo the default buffer-to-view fill so we can think in buffer coords
+ *   2. center the buffer at origin
+ *   3. rotate by the angle that makes the image upright on screen
+ *   4. cover-scale uniformly so the rotated buffer fills the view
+ *   5. translate to view center
+ *   6. mirror horizontally for the selfie preview
  *
- * Standard Camera2 approach: undo the default fill via setRectToRect to a rotated
- * buffer rect, then post-scale to cover, then post-rotate by (sensor - display) for
- * back camera or (sensor + display) for front. Front camera adds a horizontal mirror
- * for selfie-natural feel.
+ * Step 1 is the bit that earlier attempts missed; without it, post-rotation
+ * just rotates an already-distorted (axis-stretched) fill.
  */
 private fun applyPreviewTransform(
     view: TextureView,
@@ -325,31 +340,25 @@ private fun applyPreviewTransform(
     } else {
         (sensorOrientation - displayDegrees + 360) % 360
     }
+    val rotated = rotation == 90 || rotation == 270
+    val rotW = if (rotated) bufH else bufW
+    val rotH = if (rotated) bufW else bufH
+    val scale = kotlin.math.max(viewW / rotW, viewH / rotH)
 
     val matrix = android.graphics.Matrix()
-    val viewRect = RectF(0f, 0f, viewW.toFloat(), viewH.toFloat())
-    val centerX = viewRect.centerX()
-    val centerY = viewRect.centerY()
-
-    if (rotation == 90 || rotation == 270) {
-        // Buffer's effective dimensions after rotation are (bufH, bufW) — portrait shape.
-        val bufferRect = RectF(0f, 0f, bufH, bufW)
-        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
-        // Map view rect to the centered (rotated) buffer rect — undoes the default fill,
-        // making the buffer occupy a centered area at correct rotated aspect.
-        matrix.setRectToRect(viewRect, bufferRect, android.graphics.Matrix.ScaleToFit.FILL)
-        // Cover scale: fill the view, possibly cropping. Long camera dim is bufW (will be height).
-        val scale = kotlin.math.max(viewH / bufW, viewW / bufH)
-        matrix.postScale(scale, scale, centerX, centerY)
-        matrix.postRotate(rotation.toFloat(), centerX, centerY)
-    } else if (rotation == 180) {
-        matrix.postRotate(180f, centerX, centerY)
-    }
-    // rotation == 0: identity matrix — default fill is already correct (landscape device, landscape buffer).
-
+    // Step 1: undo default fill — view coord back to buffer coord.
+    matrix.postScale(bufW / viewW, bufH / viewH)
+    // Step 2: center buffer at origin.
+    matrix.postTranslate(-bufW / 2f, -bufH / 2f)
+    // Step 3: rotate around origin.
+    matrix.postRotate(rotation.toFloat())
+    // Step 4: cover-scale uniformly.
+    matrix.postScale(scale, scale)
+    // Step 5: translate to view center.
+    matrix.postTranslate(viewW / 2f, viewH / 2f)
+    // Step 6: selfie mirror.
     if (isFrontCamera) {
-        matrix.postScale(-1f, 1f, centerX, centerY)
+        matrix.postScale(-1f, 1f, viewW / 2f, viewH / 2f)
     }
-
     view.setTransform(matrix)
 }
