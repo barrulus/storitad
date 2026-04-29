@@ -87,6 +87,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     var basename by remember { mutableStateOf<String?>(null) }
     var service by remember { mutableStateOf<RecordingService?>(null) }
     var useFront by remember { mutableStateOf(true) }
+    var sensorOrientation by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
     val conn = remember {
@@ -103,6 +104,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         recorder.useFrontCamera = useFront
         recorder.unbind()  // close prior camera handle (e.g., on flip)
         recorder.bind(s, Size(1280, 720))
+        sensorOrientation = sensorOrientation
     }
 
     LaunchedEffect(recording, paused) {
@@ -144,11 +146,11 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                             st.setDefaultBufferSize(1280, 720)
-                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), displayRotation, useFront)
+                            applyPreviewTransform(this@apply, w, h, sensorOrientation, displayRotation, useFront)
                             surface = android.view.Surface(st)
                         }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                            applyPreviewTransform(this@apply, w, h, recorder.sensorOrientation(), displayRotation, useFront)
+                            applyPreviewTransform(this@apply, w, h, sensorOrientation, displayRotation, useFront)
                         }
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             surface = null
@@ -160,7 +162,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
             },
             update = { tv ->
                 // Re-apply transform when camera flips (sensor orientation may change between front/back)
-                applyPreviewTransform(tv, tv.width, tv.height, recorder.sensorOrientation(), displayRotation, useFront)
+                applyPreviewTransform(tv, tv.width, tv.height, sensorOrientation, displayRotation, useFront)
             },
             modifier = Modifier
                 .fillMaxSize()
