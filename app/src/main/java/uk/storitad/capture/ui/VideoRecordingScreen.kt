@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,8 +85,7 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
     var elapsed by remember { mutableStateOf(0L) }
     var basename by remember { mutableStateOf<String?>(null) }
     var service by remember { mutableStateOf<RecordingService?>(null) }
-    var useFront by remember { mutableStateOf(true) }
-    var sensorOrientation by remember { mutableStateOf(0) }
+    var useFront by rememberSaveable { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
 
     val conn = remember {
@@ -102,7 +102,6 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         recorder.useFrontCamera = useFront
         recorder.unbind()  // close prior camera handle (e.g., on flip)
         recorder.bind(s, Size(1280, 720))
-        sensorOrientation = recorder.sensorOrientation()
     }
 
     LaunchedEffect(recording, paused) {
@@ -130,26 +129,16 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
         AndroidView(
             factory = { c ->
                 TextureView(c).apply {
-                    val loggedTransformMatrix = java.util.concurrent.atomic.AtomicBoolean(false)
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                             st.setDefaultBufferSize(1280, 720)
-                            android.util.Log.d("VideoPreview", "onSurfaceTextureAvailable: textureViewSize=${w}x${h} setDefaultBufferSize(1280, 720) called")
-                            applyPreviewTransform(this@apply, w, h, sensorOrientation, displayRotation, useFront)
+                            applyPreviewTransform(this@apply, w, h, displayRotation, useFront)
                             surface = android.view.Surface(st)
                         }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                            android.util.Log.d("VideoPreview", "onSurfaceTextureSizeChanged: textureViewSize=${w}x${h}")
-                            applyPreviewTransform(this@apply, w, h, sensorOrientation, displayRotation, useFront)
+                            applyPreviewTransform(this@apply, w, h, displayRotation, useFront)
                         }
-                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
-                            // Log buffer transform once — tells us whether Camera2 produced something other than 1280x720.
-                            val mtx = FloatArray(16)
-                            st.getTransformMatrix(mtx)
-                            if (loggedTransformMatrix.compareAndSet(false, true)) {
-                                android.util.Log.d("VideoPreview", "onSurfaceTextureUpdated: bufferTransform=${mtx.joinToString(",", "[", "]") { "%.3f".format(it) }}")
-                            }
-                        }
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             surface = null
                             return true
@@ -158,8 +147,8 @@ fun VideoRecordingScreen(onStopped: (String) -> Unit, onCancel: () -> Unit) {
                 }
             },
             update = { tv ->
-                // Re-apply transform when camera flips (sensor orientation may change between front/back)
-                applyPreviewTransform(tv, tv.width, tv.height, sensorOrientation, displayRotation, useFront)
+                // Re-apply transform on recompose (camera flip toggles the front-mirror).
+                applyPreviewTransform(tv, tv.width, tv.height, displayRotation, useFront)
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -303,49 +292,45 @@ private fun formatElapsed(ms: Long): String {
     return "%d:%02d".format(sec / 60, sec % 60)
 }
 
-/**
- * Build a TextureView transform that displays a 1280x720 sensor buffer correctly:
- *   1. undo the default buffer-to-view fill so we can think in buffer coords
- *   2. center the buffer at origin
- *   3. rotate by the angle that makes the image upright on screen
- *   4. cover-scale uniformly so the rotated buffer fills the view
- *   5. translate to view center
- *   6. mirror horizontally for the selfie preview
- *
- * Step 1 is the bit that earlier attempts missed; without it, post-rotation
- * just rotates an already-distorted (axis-stretched) fill.
- */
 private fun applyPreviewTransform(
     view: TextureView,
     viewW: Int,
     viewH: Int,
-    sensorOrientation: Int,
     displayRotation: Int,
     isFrontCamera: Boolean,
 ) {
     if (viewW == 0 || viewH == 0) return
 
-    // Buffer is pinned to 1280×720 by VideoRecorder via OutputConfiguration(Size, SurfaceTexture::class).
-    // On Pixel HALs that path auto-rotates the sensor frame to portrait (9:16) and then *stretches*
-    // it horizontally to fill the landscape buffer — verified on Pixel 9 Pro (front, sensorOrientation=270,
-    // identity bufferTransform but face appeared ~1.78× too wide). So the buffer holds upright content
-    // with a 16:9 aspect that's actually 9:16 distorted. We undo that distortion before cover-scaling.
-    @Suppress("UNUSED_PARAMETER", "UNUSED_VARIABLE")
-    val unused = sensorOrientation to displayRotation
+    // HAL writes upright-portrait content stretched into the 1280×720 landscape buffer regardless
+    // of device orientation (verified: bufferTransform=identity in both, but content is portrait-
+    // shaped). We undo the stretch to get a virtual 720×1280 portrait, then rotate by the angle
+    // needed to match the current display orientation, then cover-scale into the view.
     val bufW = 1280f
     val bufH = 720f
-    val xCorrect = bufH / bufW   // 0.5625 — compress the HAL's horizontal stretch
-    val yCorrect = bufW / bufH   // 1.778  — undo the HAL's vertical compress
-    val virtW = bufW * xCorrect  // 720  — true content width
-    val virtH = bufH * yCorrect  // 1280 — true content height
-    val scale = kotlin.math.max(viewW / virtW, viewH / virtH)
+    val xCorrect = bufH / bufW   // 0.5625
+    val yCorrect = bufW / bufH   // 1.778
+    val virtW = bufW * xCorrect  // 720
+    val virtH = bufH * yCorrect  // 1280
+
+    // Rotation: virtual content is upright-portrait. In portrait view, no rotation needed.
+    // In landscape, rotate ±90° depending on which way the device was tilted.
+    val rotation = when (displayRotation) {
+        Surface.ROTATION_0 -> 0
+        Surface.ROTATION_90 -> 270   // top of natural-portrait now points right
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 90   // top of natural-portrait now points left
+        else -> 0
+    }
+    val rotated = rotation == 90 || rotation == 270
+    val rotW = if (rotated) virtH else virtW
+    val rotH = if (rotated) virtW else virtH
+    val scale = kotlin.math.max(viewW / rotW, viewH / rotH)
 
     val matrix = android.graphics.Matrix()
-    // Undo TextureView's default view→buffer fill so we work in buffer pixel space.
     matrix.postScale(bufW / viewW, bufH / viewH)
     matrix.postTranslate(-bufW / 2f, -bufH / 2f)
-    // Undo the HAL's portrait→landscape stretch, then cover-scale uniformly to the view.
     matrix.postScale(xCorrect, yCorrect)
+    matrix.postRotate(rotation.toFloat())
     matrix.postScale(scale, scale)
     matrix.postTranslate(viewW / 2f, viewH / 2f)
     if (isFrontCamera) {
