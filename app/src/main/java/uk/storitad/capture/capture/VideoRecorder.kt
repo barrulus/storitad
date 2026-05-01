@@ -3,11 +3,14 @@ package uk.storitad.capture.capture
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
 import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Build
@@ -16,6 +19,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
 import android.view.Surface
+import java.util.concurrent.Executor
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import kotlin.coroutines.resume
@@ -181,17 +185,51 @@ class VideoRecorder(private val context: Context) {
             }, cameraHandler)
         }
 
-    private suspend fun createSession(outputs: List<Surface>): CameraCaptureSession =
-        suspendCancellableCoroutine { cont ->
-            val cam = camera ?: error("camera not opened")
-            @Suppress("DEPRECATION")
-            cam.createCaptureSession(outputs, object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(s: CameraCaptureSession) { cont.resume(s) }
-                override fun onConfigureFailed(s: CameraCaptureSession) {
-                    cont.resumeWithException(RuntimeException("session configure failed"))
-                }
-            }, cameraHandler)
+    /** Executor that runs callbacks on the camera HandlerThread (matches the legacy createCaptureSession behaviour). */
+    private val cameraExecutor = Executor { r -> cameraHandler.post(r) }
+
+    /**
+     * Configure a session with explicit output sizes. The preview [OutputConfiguration] uses the
+     * `Size + SurfaceTexture::class.java` deferred-surface constructor: this pins the buffer size to
+     * exactly [PREVIEW_SIZE] regardless of TextureView's view-driven SurfaceTexture sizing. The actual
+     * Surface is attached after configuration via [OutputConfiguration.addSurface] +
+     * [CameraCaptureSession.finalizeOutputConfigurations].
+     */
+    private suspend fun createPinnedSession(
+        previewSurface: Surface,
+        recorderSurface: Surface?,
+    ): CameraCaptureSession = suspendCancellableCoroutine { cont ->
+        val cam = camera ?: error("camera not opened")
+
+        val previewConfig = OutputConfiguration(PREVIEW_SIZE, SurfaceTexture::class.java)
+        val outputs = mutableListOf(previewConfig)
+        if (recorderSurface != null) {
+            outputs += OutputConfiguration(recorderSurface)
         }
+
+        val sessionConfig = SessionConfiguration(
+            SessionConfiguration.SESSION_REGULAR,
+            outputs,
+            cameraExecutor,
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: CameraCaptureSession) {
+                    // Attach the deferred preview Surface and finalize.
+                    runCatching {
+                        previewConfig.addSurface(previewSurface)
+                        s.finalizeOutputConfigurations(listOf(previewConfig))
+                    }.onFailure {
+                        if (cont.isActive) cont.resumeWithException(it)
+                        return
+                    }
+                    cont.resume(s)
+                }
+                override fun onConfigureFailed(s: CameraCaptureSession) {
+                    if (cont.isActive) cont.resumeWithException(RuntimeException("session configure failed"))
+                }
+            },
+        )
+        cam.createCaptureSession(sessionConfig)
+    }
 
     private suspend fun startPreviewSession() {
         val cam = camera ?: return
@@ -200,7 +238,7 @@ class VideoRecorder(private val context: Context) {
             addTarget(preview)
         }
         captureRequestBuilder = builder
-        val s = createSession(listOf(preview))
+        val s = createPinnedSession(preview, recorderSurface = null)
         session = s
         s.setRepeatingRequest(builder.build(), null, cameraHandler)
     }
@@ -215,7 +253,7 @@ class VideoRecorder(private val context: Context) {
             addTarget(recSurf)
         }
         captureRequestBuilder = builder
-        val s = createSession(listOf(preview, recSurf))
+        val s = createPinnedSession(preview, recorderSurface = recSurf)
         session = s
         s.setRepeatingRequest(builder.build(), null, cameraHandler)
     }
@@ -228,6 +266,10 @@ class VideoRecorder(private val context: Context) {
         val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context)
                 else @Suppress("DEPRECATION") MediaRecorder()
 
+        // Note: the preview SurfaceTexture (via OutputConfiguration(Size, SurfaceTexture::class))
+        // is auto-rotated upright by the HAL, but a plain OutputConfiguration(Surface) — what
+        // MediaRecorder uses — receives sensor-orientation frames. So we need the standard hint
+        // here to make players rotate the recorded buffer on playback.
         val sensorRotation = camera?.let {
             cameraManager.getCameraCharacteristics(it.id)
                 .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
@@ -285,5 +327,9 @@ class VideoRecorder(private val context: Context) {
         runCatching { session?.close() }; session = null
     }
 
-    companion object { private const val TAG = "VideoRecorder" }
+    companion object {
+        private const val TAG = "VideoRecorder"
+        /** Pinned preview/recorder buffer size — must match MediaRecorder.setVideoSize and a supported camera output. */
+        private val PREVIEW_SIZE = Size(1280, 720)
+    }
 }

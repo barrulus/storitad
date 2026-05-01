@@ -325,44 +325,29 @@ private fun applyPreviewTransform(
 ) {
     if (viewW == 0 || viewH == 0) return
 
+    // Buffer is pinned to 1280×720 by VideoRecorder via OutputConfiguration(Size, SurfaceTexture::class).
+    // On Pixel HALs that path auto-rotates the sensor frame to portrait (9:16) and then *stretches*
+    // it horizontally to fill the landscape buffer — verified on Pixel 9 Pro (front, sensorOrientation=270,
+    // identity bufferTransform but face appeared ~1.78× too wide). So the buffer holds upright content
+    // with a 16:9 aspect that's actually 9:16 distorted. We undo that distortion before cover-scaling.
+    @Suppress("UNUSED_PARAMETER", "UNUSED_VARIABLE")
+    val unused = sensorOrientation to displayRotation
     val bufW = 1280f
     val bufH = 720f
-    val displayDegrees = when (displayRotation) {
-        Surface.ROTATION_0 -> 0
-        Surface.ROTATION_90 -> 90
-        Surface.ROTATION_180 -> 180
-        Surface.ROTATION_270 -> 270
-        else -> 0
-    }
-    val rotation = if (isFrontCamera) {
-        (sensorOrientation + displayDegrees) % 360
-    } else {
-        (sensorOrientation - displayDegrees + 360) % 360
-    }
-    val rotated = rotation == 90 || rotation == 270
-    val rotW = if (rotated) bufH else bufW
-    val rotH = if (rotated) bufW else bufH
-    // DIAGNOSTIC: use FIT (min) instead of COVER (max). Letterboxes if buffer aspect != view aspect.
-    // If preview now has correct face proportions (with black bars), matrix is correct and
-    // the previous "squashed" was the COVER crop. If still squashed, buffer aspect is wrong.
-    val scale = kotlin.math.min(viewW / rotW, viewH / rotH)
-    android.util.Log.d(
-        "VideoPreview",
-        "applyPreviewTransform: view=${viewW}x${viewH} buf=${bufW.toInt()}x${bufH.toInt()} sensor=$sensorOrientation display=$displayRotation front=$isFrontCamera => rotation=$rotation rotW=${rotW.toInt()} rotH=${rotH.toInt()} scale=$scale (FIT)"
-    )
+    val xCorrect = bufH / bufW   // 0.5625 — compress the HAL's horizontal stretch
+    val yCorrect = bufW / bufH   // 1.778  — undo the HAL's vertical compress
+    val virtW = bufW * xCorrect  // 720  — true content width
+    val virtH = bufH * yCorrect  // 1280 — true content height
+    val scale = kotlin.math.max(viewW / virtW, viewH / virtH)
 
     val matrix = android.graphics.Matrix()
-    // Step 1: undo default fill — view coord back to buffer coord.
+    // Undo TextureView's default view→buffer fill so we work in buffer pixel space.
     matrix.postScale(bufW / viewW, bufH / viewH)
-    // Step 2: center buffer at origin.
     matrix.postTranslate(-bufW / 2f, -bufH / 2f)
-    // Step 3: rotate around origin.
-    matrix.postRotate(rotation.toFloat())
-    // Step 4: cover-scale uniformly.
+    // Undo the HAL's portrait→landscape stretch, then cover-scale uniformly to the view.
+    matrix.postScale(xCorrect, yCorrect)
     matrix.postScale(scale, scale)
-    // Step 5: translate to view center.
     matrix.postTranslate(viewW / 2f, viewH / 2f)
-    // Step 6: selfie mirror.
     if (isFrontCamera) {
         matrix.postScale(-1f, 1f, viewW / 2f, viewH / 2f)
     }
