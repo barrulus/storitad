@@ -20,5 +20,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 *.jks
+keystore.properties
 superpowers/
 .worktrees/
