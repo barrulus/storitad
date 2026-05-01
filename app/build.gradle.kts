@@ -97,12 +97,6 @@ dependencies {
     implementation(libs.accompanist.permissions)
     implementation(libs.work.runtime.ktx)
 
-    implementation(libs.camerax.core)
-    implementation(libs.camerax.camera2)
-    implementation(libs.camerax.lifecycle)
-    implementation(libs.camerax.video)
-    implementation(libs.camerax.view)
-
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
 
